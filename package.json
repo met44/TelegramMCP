@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TODO/telegram-mcp-bridge"
+    "url": "https://github.com/met44/telegram-mcp-bridge"
   },
   "keywords": [
     "mcp",
@@ -21,7 +21,7 @@
   "main": "server.js",
   "scripts": {
     "build": "node build.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/server.test.js test/build.test.js test/config.test.js",
     "test:unit": "node --test test/server.test.js",
     "test:build": "node --test test/build.test.js",
     "test:config": "node --test test/config.test.js",
