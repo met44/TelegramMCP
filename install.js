@@ -166,9 +166,144 @@ function getServerCode() {
 }
 
 // ---------------------------------------------------------------------------
+// Behavior flag definitions
+// ---------------------------------------------------------------------------
+const BEHAVIOR_FLAGS = [
+  { key: "TELEGRAM_AUTO_START",   label: "Auto-greet",   desc: "Send greeting + plan summary at session start" },
+  { key: "TELEGRAM_AUTO_END",     label: "Auto-summary", desc: "Send summary when task/session ends" },
+  { key: "TELEGRAM_AUTO_SUMMARY", label: "Work summary", desc: "Send summary when starting new work" },
+  { key: "TELEGRAM_AUTO_POLL",    label: "Auto-poll",    desc: "Auto-poll for user messages regularly" },
+];
+
+// ---------------------------------------------------------------------------
+// Configure command — edit behavior flags on an existing install
+// ---------------------------------------------------------------------------
+async function runConfigure() {
+  console.log("");
+  console.log(`${C.cyan}${C.bold}╔══════════════════════════════════════════════════╗${C.reset}`);
+  console.log(`${C.cyan}${C.bold}║     📡 Telegram MCP Bridge — Configure          ║${C.reset}`);
+  console.log(`${C.cyan}${C.bold}╚══════════════════════════════════════════════════╝${C.reset}`);
+  console.log("");
+
+  // Find which agents have telegram-bridge configured
+  const found = [];
+  for (const agent of AGENTS) {
+    const cp = agent.configPath();
+    if (cp.startsWith("__")) continue;
+    if (!fs.existsSync(cp)) continue;
+    try {
+      const config = JSON.parse(fs.readFileSync(cp, "utf-8"));
+      const entry = config[agent.key]?.["telegram-bridge"];
+      if (entry) found.push({ agent, configPath: cp, config, entry });
+    } catch { /* skip */ }
+  }
+
+  if (!found.length) {
+    fail("No existing Telegram MCP Bridge installation found.");
+    info("Run without 'configure' to install first.");
+    rl.close();
+    return;
+  }
+
+  // If multiple agents, let user pick
+  let target;
+  if (found.length === 1) {
+    target = found[0];
+    ok(`Found config: ${target.agent.name} (${target.configPath})`);
+  } else {
+    console.log(`  ${C.bold}Found multiple installations:${C.reset}`);
+    console.log("");
+    found.forEach((f, i) => console.log(`    ${C.bold}${i + 1})${C.reset} ${f.agent.name}`));
+    console.log("");
+    let choice;
+    while (true) {
+      const input = (await ask(`Choose [1-${found.length}]: `)).trim();
+      const num = parseInt(input, 10);
+      if (num >= 1 && num <= found.length) { choice = num - 1; break; }
+      warn("Invalid choice.");
+    }
+    target = found[choice];
+  }
+
+  const env = target.entry.env || {};
+  console.log("");
+  console.log(`  ${C.bold}Current behavior flags:${C.reset}`);
+  console.log("");
+
+  for (const flag of BEHAVIOR_FLAGS) {
+    const current = env[flag.key] !== "false";
+    console.log(`    ${current ? C.green + "✔" : C.red + "✘"}${C.reset} ${C.bold}${flag.label}${C.reset} — ${flag.desc}`);
+  }
+
+  console.log("");
+  console.log(`  ${C.bold}Toggle flags:${C.reset}`);
+  console.log("");
+  BEHAVIOR_FLAGS.forEach((f, i) => {
+    const current = env[f.key] !== "false";
+    console.log(`    ${C.bold}${i + 1})${C.reset} ${f.label} [${current ? "ON" : "OFF"}]`);
+  });
+  console.log(`    ${C.bold}${BEHAVIOR_FLAGS.length + 1})${C.reset} Update server.js to latest`);
+  console.log(`    ${C.bold}0)${C.reset} Save & exit`);
+  console.log("");
+
+  let changed = false;
+  while (true) {
+    const input = (await ask("Toggle [0 to save]: ")).trim();
+    const num = parseInt(input, 10);
+    if (num === 0) break;
+    if (num === BEHAVIOR_FLAGS.length + 1) {
+      // Update server.js
+      const serverCode = getServerCode();
+      if (serverCode) {
+        const serverPath = target.entry.args?.[0] || path.join(INSTALL_DIR, "server.js");
+        fs.writeFileSync(serverPath, serverCode);
+        ok("server.js updated to latest version");
+      } else {
+        fail("Could not find server.js source");
+      }
+      continue;
+    }
+    if (num < 1 || num > BEHAVIOR_FLAGS.length) { warn("Invalid choice."); continue; }
+    const flag = BEHAVIOR_FLAGS[num - 1];
+    const current = env[flag.key] !== "false";
+    env[flag.key] = current ? "false" : "true";
+    changed = true;
+    const newVal = !current;
+    ok(`${flag.label}: ${newVal ? "ON" : "OFF"}`);
+  }
+
+  if (changed) {
+    // Clean up: remove flags that are "true" (default) to keep config clean
+    for (const flag of BEHAVIOR_FLAGS) {
+      if (env[flag.key] === "true") delete env[flag.key];
+    }
+    target.entry.env = env;
+    target.config[target.agent.key]["telegram-bridge"] = target.entry;
+    // Backup
+    const bak = target.configPath + ".bak." + Date.now();
+    fs.copyFileSync(target.configPath, bak);
+    info(`Backed up to ${path.basename(bak)}`);
+    fs.writeFileSync(target.configPath, JSON.stringify(target.config, null, 2));
+    ok(`Config saved to ${target.configPath}`);
+    info("Restart your agent/IDE to apply changes.");
+  } else {
+    info("No changes made.");
+  }
+
+  console.log("");
+  rl.close();
+}
+
+// ---------------------------------------------------------------------------
 // Main installer
 // ---------------------------------------------------------------------------
 async function main() {
+  // Route to configure if requested
+  const args = process.argv.slice(2);
+  if (args.includes("configure") || args.includes("--configure") || args.includes("-c")) {
+    return runConfigure();
+  }
+
   const TOTAL = 6;
 
   console.log("");

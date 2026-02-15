@@ -1,0 +1,45 @@
+{
+  "name": "telegram-mcp-bridge",
+  "version": "1.1.0",
+  "description": "MCP server that bridges AI agent sessions with Telegram for async communication",
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TODO/telegram-mcp-bridge"
+  },
+  "keywords": [
+    "mcp",
+    "telegram",
+    "ai-agent",
+    "model-context-protocol",
+    "claude",
+    "windsurf",
+    "cursor",
+    "gemini"
+  ],
+  "main": "server.js",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node --test test/*.test.js",
+    "test:unit": "node --test test/server.test.js",
+    "test:build": "node --test test/build.test.js",
+    "test:config": "node --test test/config.test.js",
+    "configure": "node install.js configure",
+    "install-mcp": "node install.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "server.js",
+    "install.js",
+    "build.js",
+    "dist/",
+    "LICENSE",
+    "README.md"
+  ]
+}
