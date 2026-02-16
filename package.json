@@ -25,6 +25,7 @@
     "test:unit": "node --test test/server.test.js",
     "test:build": "node --test test/build.test.js",
     "test:config": "node --test test/config.test.js",
+    "verify": "node verify.js",
     "configure": "node install.js configure",
     "install-mcp": "node install.js"
   },

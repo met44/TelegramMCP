@@ -48,15 +48,16 @@ The installer will:
 The server runs alongside your agent and:
 - **Polls Telegram** in the background (long-polling, no webhooks)
 - **Queues messages** to disk so nothing is lost
-- **Exposes 3 tools** to the agent via MCP
+- **Exposes 4 tools** to the agent via MCP
 
 ### Tools
 
 | Tool | What it does | Context Cost |
 |------|-------------|-------------|
-| `check_status` | Returns `{"pending": N}` | ~10 tokens |
+| `check_status` | Returns `{"pending": N}`, optional `wait` param | ~10 tokens |
 | `poll_messages` | Returns new messages (or `[]`) | ~3 tokens when empty |
 | `send_message` | Sends a Telegram message to you | ~15 tokens |
+| `wait_for_reply` | Blocks until user replies via Telegram (or timeout) | ~15 tokens |
 
 ### Agent Protocol
 
@@ -119,6 +120,16 @@ Example — disable auto-polling but keep start/end messages:
 
 If pasting the bot token crashes your terminal, save it to a text file and enter the file path instead. The installer supports both.
 
+## Security & Trust
+
+The single-file installer (`dist/telegram-mcp-install.js`) embeds `server.js` as base64 for convenience. If you're concerned about what's in the blob:
+
+1. **Clone the repo** and use `install.js` directly — it prefers the adjacent `server.js` source file over the embedded base64
+2. **Verify the build** — after `npm run build`, run `npm run verify` to confirm the embedded code matches `server.js` (SHA-256 comparison)
+3. **Read the source** — `server.js` is a single readable file with zero external dependencies beyond `@modelcontextprotocol/sdk`
+
+The build also generates `dist/server.js.sha256` for independent verification.
+
 ## Development
 
 ```
@@ -126,18 +137,21 @@ telegram-mcp-bridge/
 ├── server.js          # MCP server (standalone)
 ├── install.js         # Installer + configure command
 ├── build.js           # Builds single-file distributable
+├── verify.js          # Verifies embedded base64 matches source
 ├── test/              # Automated tests
 │   ├── server.test.js
 │   ├── build.test.js
 │   └── config.test.js
 └── dist/
-    └── telegram-mcp-install.js  # Single-file installer (server.js embedded)
+    ├── telegram-mcp-install.js  # Single-file installer (server.js embedded)
+    └── server.js.sha256         # Checksum for verification
 ```
 
 ```bash
 npm install            # Install dev dependencies
 npm test               # Run all tests
 npm run build          # Rebuild distributable
+npm run verify         # Verify embedded code matches source
 ```
 
 ### Updating a deployed install

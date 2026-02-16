@@ -252,7 +252,8 @@ function buildSendDesc() {
     "When starting work on something, send a concise summary of what you're about to do.");
   rules.push("Send updates on major milestones or when you need input.");
   if (AUTO_SEND_END) rules.push(
-    "Send a final summary when the task is done or the session ends.");
+    "Send a final summary when the task is done or the session ends, " +
+    "then call wait_for_reply to give the user a chance to send follow-up instructions before you finish.");
   rules.push("Keep messages concise (phone-readable).");
   if (rules.length) d += "\nPROTOCOL: " + rules.join(" ");
   return d;
@@ -264,7 +265,9 @@ function buildCheckDesc() {
   if (AUTO_POLL) {
     d += "\nPROTOCOL: During any task, call this regularly \u2014 at least every few minutes \u2014 " +
       "to check if the user sent a message via Telegram. If pending > 0, call poll_messages. " +
-      "This lets the user provide feedback or corrections mid-task without restarting.";
+      "This lets the user provide feedback or corrections mid-task without restarting." +
+      " Use the wait parameter (e.g. wait=120) to block before checking \u2014 " +
+      "this avoids spamming rapid polls when idle.";
   }
   return d;
 }
@@ -292,7 +295,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "check_status",
       description: buildCheckDesc(),
-      inputSchema: { type: "object", properties: {} },
+      inputSchema: {
+        type: "object",
+        properties: {
+          wait: {
+            type: "number",
+            description: "Seconds to wait before checking (blocks the call). Use 60-120 for routine idle polling.",
+          },
+        },
+      },
+    },
+    {
+      name: "wait_for_reply",
+      description:
+        "Block until the user sends a Telegram message, then return it. " +
+        "Use this after asking the user a question via send_message — " +
+        "it holds the call server-side until a reply arrives (no polling needed). " +
+        "Returns the message(s) directly. Times out after the specified duration (default 120s, max 300s).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          timeout: {
+            type: "number",
+            description: "Max seconds to wait for a reply (default 120, max 300).",
+          },
+        },
+      },
     },
   ],
 }));
@@ -317,9 +345,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "check_status") {
+    const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait * 1000));
     return {
       content: [{ type: "text", text: JSON.stringify({ pending: queue.pendingCount() }) }],
     };
+  }
+
+  if (name === "wait_for_reply") {
+    const timeout = Math.min(Math.max(parseInt(args?.timeout, 10) || 120, 1), 300);
+    const deadline = Date.now() + timeout * 1000;
+    while (Date.now() < deadline) {
+      if (queue.pendingCount() > 0) {
+        const msgs = queue.poll();
+        const slim = msgs.map((m) => ({ id: m.id, text: m.text, ts: m.ts }));
+        return { content: [{ type: "text", text: JSON.stringify(slim) }] };
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ timeout: true, waited: timeout }) }] };
   }
 
   return { content: [{ type: "text", text: '{"error":"unknown tool"}' }] };

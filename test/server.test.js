@@ -93,13 +93,12 @@ describe("MessageQueue", () => {
 
 describe("buildSendDesc", () => {
   it("includes protocol rules when all flags are on", () => {
-    // Simulate all flags on
-    const AUTO_SEND_START = true, AUTO_SEND_END = true, AUTO_SUMMARY = true;
-    const d = buildSendDescWith(AUTO_SEND_START, AUTO_SEND_END, AUTO_SUMMARY);
+    const d = buildSendDescWith(true, true, true);
     assert.ok(d.includes("PROTOCOL:"));
     assert.ok(d.includes("START of every session"));
     assert.ok(d.includes("starting work on something"));
     assert.ok(d.includes("final summary"));
+    assert.ok(d.includes("wait_for_reply"));
   });
 
   it("omits disabled flag rules", () => {
@@ -124,6 +123,11 @@ describe("buildCheckDesc", () => {
     const d = buildCheckDescWith(false);
     assert.ok(!d.includes("PROTOCOL:"));
   });
+
+  it("mentions wait parameter when AUTO_POLL is on", () => {
+    const d = buildCheckDescWith(true);
+    assert.ok(d.includes("wait"));
+  });
 });
 
 // Replicate the builder functions for testing (avoids requiring server.js)
@@ -137,7 +141,8 @@ function buildSendDescWith(autoStart, autoEnd, autoSummary) {
     "When starting work on something, send a concise summary of what you're about to do.");
   rules.push("Send updates on major milestones or when you need input.");
   if (autoEnd) rules.push(
-    "Send a final summary when the task is done or the session ends.");
+    "Send a final summary when the task is done or the session ends, " +
+    "then call wait_for_reply to give the user a chance to send follow-up instructions before you finish.");
   rules.push("Keep messages concise (phone-readable).");
   if (rules.length) d += "\nPROTOCOL: " + rules.join(" ");
   return d;
@@ -149,7 +154,9 @@ function buildCheckDescWith(autoPoll) {
   if (autoPoll) {
     d += "\nPROTOCOL: During any task, call this regularly \u2014 at least every few minutes \u2014 " +
       "to check if the user sent a message via Telegram. If pending > 0, call poll_messages. " +
-      "This lets the user provide feedback or corrections mid-task without restarting.";
+      "This lets the user provide feedback or corrections mid-task without restarting." +
+      " Use the wait parameter (e.g. wait=120) to block before checking \u2014 " +
+      "this avoids spamming rapid polls when idle.";
   }
   return d;
 }
