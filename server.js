@@ -185,7 +185,7 @@ async function pollTelegram() {
   try {
     const res = await tgApi("getUpdates", {
       offset: lastUpdateId,
-      timeout: 10,
+      timeout: 2,
       allowed_updates: ["message"],
     });
     if (!res.ok || !res.result) return;
@@ -346,7 +346,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "check_status") {
     const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait * 1000));
+    if (wait > 0) {
+      const deadline = Date.now() + wait * 1000;
+      while (Date.now() < deadline && queue.pendingCount() === 0) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
     return {
       content: [{ type: "text", text: JSON.stringify({ pending: queue.pendingCount() }) }],
     };
