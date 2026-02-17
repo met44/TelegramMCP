@@ -22,7 +22,7 @@ const crypto = require("crypto");
 // Config from env
 // ---------------------------------------------------------------------------
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+let CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const DATA_DIR = process.env.TELEGRAM_MCP_DATA_DIR ||
   path.join(os.homedir(), ".telegram-mcp-bridge", "data");
 const MAX_HISTORY = parseInt(process.env.TELEGRAM_MCP_MAX_HISTORY || "200", 10);
@@ -127,10 +127,24 @@ async function ensureTopic() {
 
   // Create a new topic
   try {
-    const res = await tgApi("createForumTopic", {
-      chat_id: parseInt(CHAT_ID, 10),
+    let chatIdNum = parseInt(CHAT_ID, 10);
+    let res = await tgApi("createForumTopic", {
+      chat_id: chatIdNum,
       name: `🤖 ${SESSION_LABEL}`,
     });
+
+    // Handle chat migration (group upgraded to supergroup)
+    if (!res.ok && res.parameters?.migrate_to_chat_id) {
+      const newId = String(res.parameters.migrate_to_chat_id);
+      log.info(`Chat migrated: ${CHAT_ID} → ${newId}`);
+      CHAT_ID = newId;
+      chatIdNum = parseInt(CHAT_ID, 10);
+      res = await tgApi("createForumTopic", {
+        chat_id: chatIdNum,
+        name: `🤖 ${SESSION_LABEL}`,
+      });
+    }
+
     if (res.ok && res.result) {
       topicId = res.result.message_thread_id;
       map[SESSION_LABEL] = topicId;

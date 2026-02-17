@@ -566,13 +566,27 @@ async function main() {
     process.exit(1);
   }
 
-  // --- Verify it's a forum group ---
+  // --- Verify it's a forum group (handle migration) ---
   info("Verifying group setup...");
   let isForumGroup = false;
   try {
-    const chatInfo = await tgApi(botToken, "getChat", { chat_id: parseInt(chatId, 10) });
+    let chatInfo = await tgApi(botToken, "getChat", { chat_id: parseInt(chatId, 10) });
+
+    // Handle migration: old group → supergroup
+    if (!chatInfo.ok && chatInfo.parameters?.migrate_to_chat_id) {
+      const newId = String(chatInfo.parameters.migrate_to_chat_id);
+      info(`Group migrated to supergroup: ${chatId} → ${newId}`);
+      chatId = newId;
+      chatInfo = await tgApi(botToken, "getChat", { chat_id: parseInt(chatId, 10) });
+    }
+
     if (chatInfo.ok && chatInfo.result) {
       const chat = chatInfo.result;
+      // Also handle migration via response (some API versions return it differently)
+      if (chat.id && String(chat.id) !== chatId) {
+        info(`Chat ID updated: ${chatId} → ${chat.id}`);
+        chatId = String(chat.id);
+      }
       if (chat.is_forum) {
         ok("Forum topics are enabled ✓");
         isForumGroup = true;
