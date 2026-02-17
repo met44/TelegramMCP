@@ -1,7 +1,8 @@
 // =============================================================================
 //  Telegram MCP Bridge — Web App
 //  Runs as a Telegram Mini App (TWA) or standalone in browser.
-//  Communicates with the Telegram Bot API to manage agent sessions.
+//  Send-only dashboard: sends messages to the forum group.
+//  Per-session chat happens natively in Telegram Topics.
 // =============================================================================
 
 (function () {
@@ -14,7 +15,6 @@
   if (tg) {
     tg.ready();
     tg.expand();
-    tg.enableClosingConfirmation();
   }
 
   // ---------------------------------------------------------------------------
@@ -62,10 +62,7 @@
   // State
   // ---------------------------------------------------------------------------
   let sessions = {};
-  let chatMessages = []; // { text, sender, ts, session? }
   let refreshTimer = null;
-  let lastUpdateId = 0;
-  let pollTimer = null;
 
   // ---------------------------------------------------------------------------
   // DOM refs
@@ -161,10 +158,10 @@
       const badgeClass = isActive ? "" : "inactive";
       const badgeText = isActive ? "● Active" : "● Offline";
       return `
-        <div class="session-card" data-session="${id}">
+        <div class="session-card" data-session="${escHtml(id)}">
           <div class="session-card-header">
             <div class="session-card-title">
-              🖥️ ${escHtml(s.machine || "Unknown")}
+              🖥️ ${escHtml(s.label || s.machine || "Unknown")}
               <span class="session-id">${escHtml(id)}</span>
             </div>
             <span class="session-badge ${badgeClass}">${badgeText}</span>
@@ -172,69 +169,44 @@
           <div class="session-meta">
             <span class="session-meta-item">🤖 ${escHtml(s.agent || "agent")}</span>
             <span class="session-meta-item">🕐 ${timeAgo(s.lastSeen || s.startedAt || 0)}</span>
-            ${s.startedAt ? `<span class="session-meta-item">📅 Started ${formatTime(s.startedAt)}</span>` : ""}
+            ${s.topicId ? `<span class="session-meta-item">� Topic #${s.topicId}</span>` : ""}
           </div>
         </div>`;
     }).join("");
 
-    // Click to switch chat target
+    // Click to open Telegram group (topics are native)
     sessionsList.querySelectorAll(".session-card").forEach((card) => {
       card.addEventListener("click", () => {
-        const sid = card.dataset.session;
-        chatTarget.value = sid;
-        // Switch to chat tab
-        $$(".tab").forEach((t) => t.classList.remove("active"));
-        $$(".panel").forEach((p) => p.classList.remove("active"));
-        $$(".tab")[1].classList.add("active");
-        $("#panel-chat").classList.add("active");
+        showToast("Open the group in Telegram to chat in this session's topic");
       });
     });
   }
 
   function updateChatTargetOptions() {
     const current = chatTarget.value;
-    const opts = ['<option value="__broadcast__">📢 All Sessions</option>'];
+    const opts = ['<option value="__general__">📢 General (all agents)</option>'];
     for (const [id, s] of Object.entries(sessions)) {
-      const label = `🖥️ ${s.machine || id} (${s.agent || "agent"})`;
-      opts.push(`<option value="${escHtml(id)}">${escHtml(label)}</option>`);
+      if (!s.topicId) continue;
+      const label = `🖥️ ${s.label || s.machine || id}`;
+      opts.push(`<option value="${s.topicId}">${escHtml(label)}</option>`);
     }
     chatTarget.innerHTML = opts.join("");
-    // Restore selection if still valid
     if ([...chatTarget.options].some((o) => o.value === current)) {
       chatTarget.value = current;
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Chat rendering
+  // Chat panel — send-only (actual chat is in Telegram Topics)
   // ---------------------------------------------------------------------------
   function renderChat() {
-    if (!chatMessages.length) {
-      chatMessagesEl.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">💬</div>
-          <p>No messages yet</p>
-          <p class="hint">Messages between you and your agents appear here</p>
-        </div>`;
-      return;
-    }
-
-    chatMessagesEl.innerHTML = chatMessages.map((m) => {
-      const isUser = m.sender === "user";
-      const cls = isUser ? "msg-user" : "msg-agent";
-      const label = isUser ? "" : `<div class="msg-label">${escHtml(m.session || "agent")}</div>`;
-      return `
-        <div class="msg ${cls}">
-          ${label}
-          <div>${escHtml(m.text)}</div>
-          <div class="msg-meta">
-            <span>${formatTime(m.ts)}</span>
-          </div>
-        </div>`;
-    }).join("");
-
-    // Scroll to bottom
-    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    chatMessagesEl.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">💬</div>
+        <p>Per-session chat lives in Telegram Topics</p>
+        <p class="hint">Each agent has its own topic in your forum group.<br>
+        Use this panel to send quick messages, or open Telegram to see full conversations.</p>
+      </div>`;
   }
 
   // ---------------------------------------------------------------------------
@@ -254,27 +226,32 @@
     chatInput.style.height = "auto";
     btnSend.disabled = true;
 
-    // Add to local chat
-    chatMessages.push({
-      text,
-      sender: "user",
-      ts: Math.floor(Date.now() / 1000),
-    });
-    renderChat();
-
     try {
-      await tgApi("sendMessage", {
+      const body = {
         chat_id: parseInt(chatId, 10),
         text,
-      });
+      };
+      // Send to specific topic if selected
+      const target = chatTarget.value;
+      if (target && target !== "__general__") {
+        body.message_thread_id = parseInt(target, 10);
+      }
+      await tgApi("sendMessage", body);
+      showToast("Message sent ✓");
     } catch (e) {
       showToast("Send failed: " + e.message);
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Fetch sessions from data dir (via bot API — we read the _sessions.json
-  // by having the MCP server expose it, or we parse /sessions command output)
+  // Fetch sessions via getChat + getForumTopicIconStickers
+  // We read the _sessions.json indirectly by sending /sessions and parsing
+  // the bot's response. But since we can't use getUpdates (conflicts with
+  // MCP server polling), we use getChat to verify the group is alive,
+  // and rely on the session data being visible in the forum topics.
+  //
+  // For a richer experience, the user should configure session data URL
+  // or we parse the topic list from the group.
   // ---------------------------------------------------------------------------
   async function fetchSessions() {
     if (!getBotToken() || !getChatId()) {
@@ -285,180 +262,25 @@
     setStatus("loading", "Refreshing...");
 
     try {
-      // Send /sessions command to the bot, then read the response
-      // This triggers the MCP server to reply with session info
-      await tgApi("sendMessage", {
-        chat_id: parseInt(getChatId(), 10),
-        text: "/sessions",
-      });
+      // Verify the group is accessible
+      const chatInfo = await tgApi("getChat", { chat_id: parseInt(getChatId(), 10) });
 
-      // Wait a moment for the bot to process and reply
-      await new Promise((r) => setTimeout(r, 1500));
-
-      // Fetch recent messages to find the sessions response
-      const updates = await tgApi("getUpdates", {
-        offset: lastUpdateId || -10,
-        limit: 20,
-        timeout: 0,
-      });
-
-      let foundSessions = false;
-      for (const update of updates) {
-        if (update.update_id >= lastUpdateId) {
-          lastUpdateId = update.update_id + 1;
-        }
-        const msg = update.message;
-        if (!msg || !msg.text) continue;
-
-        // Parse sessions response from bot
-        if (msg.from?.is_bot && msg.text.includes("Sessions:")) {
-          sessions = parseSessionsMessage(msg.text);
-          foundSessions = true;
-        }
-
-        // Collect chat messages from user and bot
-        if (String(msg.chat?.id) === getChatId()) {
-          const isBot = msg.from?.is_bot;
-          const existing = chatMessages.find((m) =>
-            m.ts === msg.date && m.text === msg.text
-          );
-          if (!existing && !msg.text.startsWith("/")) {
-            // Extract session label from bot messages like [machine/agent] text
-            let session = null;
-            let text = msg.text;
-            if (isBot) {
-              const match = msg.text.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
-              if (match) {
-                session = match[1];
-                text = match[2];
-              }
-            }
-            chatMessages.push({
-              text,
-              sender: isBot ? "agent" : "user",
-              ts: msg.date,
-              session,
-            });
-          }
-        }
+      if (!chatInfo.is_forum) {
+        setStatus("error", "Group does not have Topics enabled");
+        return;
       }
 
-      // Deduplicate and sort messages
-      const seen = new Set();
-      chatMessages = chatMessages.filter((m) => {
-        const key = `${m.ts}:${m.sender}:${m.text.slice(0, 50)}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      chatMessages.sort((a, b) => a.ts - b.ts);
+      // We can't list topics via Bot API directly, but we can verify the group
+      // and show basic info. Session data comes from the _sessions.json on disk
+      // which is managed by the MCP servers.
+      setStatus("connected", `Connected to: ${chatInfo.title || "Forum Group"}`);
 
-      // Keep last 200 messages
-      if (chatMessages.length > 200) {
-        chatMessages = chatMessages.slice(-200);
-      }
-
+      // If we have cached sessions, show them
       renderSessions();
       updateChatTargetOptions();
-      renderChat();
-
-      const activeCount = Object.values(sessions).filter((s) => s.active).length;
-      setStatus("connected", `${activeCount} active session${activeCount !== 1 ? "s" : ""}`);
     } catch (e) {
       setStatus("error", e.message);
-      console.error("Fetch sessions error:", e);
-    }
-  }
-
-  function parseSessionsMessage(text) {
-    const result = {};
-    // Parse lines like: 🟢 `s-abc123` *MyPC* (agent) — 5s ago
-    // or: 🔴 `s-abc123` *MyPC* (agent) — 120s ago
-    const lines = text.split("\n");
-    for (const line of lines) {
-      const match = line.match(/([🟢🔴])\s*`([^`]+)`\s*\*([^*]+)\*\s*\(([^)]+)\)\s*—\s*(\d+)s ago/);
-      if (match) {
-        const [, status, id, machine, agent, agoStr] = match;
-        const ago = parseInt(agoStr, 10);
-        const now = Math.floor(Date.now() / 1000);
-        result[id] = {
-          machine,
-          agent,
-          active: status === "🟢",
-          lastSeen: now - ago,
-          startedAt: now - ago - 60, // approximate
-        };
-      }
-    }
-    return result;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Polling for new messages (lightweight)
-  // ---------------------------------------------------------------------------
-  async function pollMessages() {
-    if (!getBotToken()) return;
-
-    try {
-      const updates = await tgApi("getUpdates", {
-        offset: lastUpdateId,
-        limit: 50,
-        timeout: 0,
-      });
-
-      let hasNew = false;
-      for (const update of updates) {
-        if (update.update_id >= lastUpdateId) {
-          lastUpdateId = update.update_id + 1;
-        }
-        const msg = update.message;
-        if (!msg || !msg.text) continue;
-        if (String(msg.chat?.id) !== getChatId()) continue;
-
-        // Skip commands and sessions responses
-        if (msg.text.startsWith("/")) continue;
-        if (msg.text.includes("Sessions:") && msg.from?.is_bot) {
-          // Update sessions from this response
-          sessions = parseSessionsMessage(msg.text);
-          renderSessions();
-          updateChatTargetOptions();
-          continue;
-        }
-
-        const isBot = msg.from?.is_bot;
-        const existing = chatMessages.find((m) =>
-          m.ts === msg.date && m.text === msg.text
-        );
-        if (!existing) {
-          let session = null;
-          let text = msg.text;
-          if (isBot) {
-            const match = msg.text.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
-            if (match) {
-              session = match[1];
-              text = match[2];
-            }
-          }
-          chatMessages.push({
-            text,
-            sender: isBot ? "agent" : "user",
-            ts: msg.date,
-            session,
-          });
-          hasNew = true;
-        }
-      }
-
-      if (hasNew) {
-        chatMessages.sort((a, b) => a.ts - b.ts);
-        if (chatMessages.length > 200) {
-          chatMessages = chatMessages.slice(-200);
-        }
-        renderChat();
-      }
-    } catch (e) {
-      // Silent fail for polling
-      console.warn("Poll error:", e.message);
+      console.error("Fetch error:", e);
     }
   }
 
@@ -467,18 +289,12 @@
   // ---------------------------------------------------------------------------
   function startAutoRefresh() {
     stopAutoRefresh();
-    const interval = (settings.refreshInterval || 10) * 1000;
-
-    // Poll for messages more frequently
-    pollTimer = setInterval(pollMessages, Math.min(interval, 5000));
-
-    // Full session refresh less frequently
-    refreshTimer = setInterval(fetchSessions, Math.max(interval, 15000));
+    const interval = (settings.refreshInterval || 30) * 1000;
+    refreshTimer = setInterval(fetchSessions, interval);
   }
 
   function stopAutoRefresh() {
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
   // ---------------------------------------------------------------------------
@@ -488,25 +304,23 @@
     $("#setting-bot-token").value = settings.botToken || "";
     $("#setting-chat-id").value = settings.chatId || "";
     $("#setting-auto-refresh").checked = settings.autoRefresh !== false;
-    $("#setting-refresh-interval").value = settings.refreshInterval || 10;
+    $("#setting-refresh-interval").value = settings.refreshInterval || 30;
   }
 
   function saveSettingsFromUI() {
     settings.botToken = $("#setting-bot-token").value.trim();
     settings.chatId = $("#setting-chat-id").value.trim();
     settings.autoRefresh = $("#setting-auto-refresh").checked;
-    settings.refreshInterval = parseInt($("#setting-refresh-interval").value, 10) || 10;
+    settings.refreshInterval = parseInt($("#setting-refresh-interval").value, 10) || 30;
     saveSettings(settings);
     showToast("Settings saved");
 
-    // Restart auto-refresh with new settings
     if (settings.autoRefresh) {
       startAutoRefresh();
     } else {
       stopAutoRefresh();
     }
 
-    // Trigger a refresh
     fetchSessions();
   }
 
@@ -523,7 +337,6 @@
 
   chatInput.addEventListener("input", () => {
     btnSend.disabled = !chatInput.value.trim();
-    // Auto-resize
     chatInput.style.height = "auto";
     chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + "px";
   });
@@ -538,10 +351,9 @@
   $("#btn-save-settings").addEventListener("click", saveSettingsFromUI);
 
   $("#btn-clear-settings").addEventListener("click", () => {
-    if (confirm("Clear all settings and message history?")) {
+    if (confirm("Clear all settings?")) {
       localStorage.removeItem(STORAGE_KEY);
       settings = {};
-      chatMessages = [];
       sessions = {};
       loadSettingsUI();
       renderSessions();
@@ -576,7 +388,6 @@
       }
     } else {
       setStatus("error", "Configure bot token & chat ID in Settings");
-      // Switch to settings tab
       $$(".tab").forEach((t) => t.classList.remove("active"));
       $$(".panel").forEach((p) => p.classList.remove("active"));
       $$(".tab")[2].classList.add("active");
