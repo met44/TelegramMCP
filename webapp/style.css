@@ -1,0 +1,604 @@
+/* ==========================================================================
+   Telegram MCP Bridge — Web App Styles
+   Designed for Telegram Mini App (TWA) with native feel
+   ========================================================================== */
+
+:root {
+  /* Telegram theme vars (overridden by TWA SDK) */
+  --tg-theme-bg-color: #ffffff;
+  --tg-theme-text-color: #000000;
+  --tg-theme-hint-color: #999999;
+  --tg-theme-link-color: #2481cc;
+  --tg-theme-button-color: #2481cc;
+  --tg-theme-button-text-color: #ffffff;
+  --tg-theme-secondary-bg-color: #f0f0f0;
+
+  /* App vars */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --gap: 12px;
+  --header-h: 52px;
+  --tabs-h: 52px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: var(--tg-theme-bg-color);
+  color: var(--tg-theme-text-color);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: hidden;
+  height: 100vh;
+  height: 100dvh;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* ---------- Header ---------- */
+#header {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  background: var(--tg-theme-bg-color);
+  border-bottom: 1px solid var(--tg-theme-secondary-bg-color);
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#header h1 {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: var(--tg-theme-link-color);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.icon-btn:active {
+  background: var(--tg-theme-secondary-bg-color);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--tg-theme-hint-color);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #999;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.status-dot.connected { background: #34c759; }
+.status-dot.error { background: #ff3b30; }
+.status-dot.loading { background: #ff9500; animation: pulse 1s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ---------- Tabs ---------- */
+#tabs {
+  flex-shrink: 0;
+  display: flex;
+  background: var(--tg-theme-bg-color);
+  border-bottom: 1px solid var(--tg-theme-secondary-bg-color);
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tg-theme-hint-color);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.2s;
+  border-bottom: 2px solid transparent;
+}
+
+.tab.active {
+  color: var(--tg-theme-link-color);
+  border-bottom-color: var(--tg-theme-link-color);
+}
+
+.tab svg {
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.tab.active svg {
+  opacity: 1;
+}
+
+/* ---------- Panels ---------- */
+.panel {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.panel.active {
+  display: flex;
+}
+
+.panel-scroll {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--gap);
+  padding-bottom: calc(var(--gap) + var(--safe-bottom));
+}
+
+/* ---------- Empty state ---------- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.empty-state p {
+  color: var(--tg-theme-hint-color);
+  font-size: 14px;
+}
+
+.hint {
+  color: var(--tg-theme-hint-color);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* ---------- Session cards ---------- */
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.session-card {
+  background: var(--tg-theme-secondary-bg-color);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  transition: transform 0.1s;
+  cursor: pointer;
+}
+
+.session-card:active {
+  transform: scale(0.98);
+}
+
+.session-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.session-card-title {
+  font-weight: 600;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(52, 199, 89, 0.15);
+  color: #34c759;
+}
+
+.session-badge.inactive {
+  background: rgba(255, 59, 48, 0.15);
+  color: #ff3b30;
+}
+
+.session-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--tg-theme-hint-color);
+}
+
+.session-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-id {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--tg-theme-hint-color);
+  background: rgba(0,0,0,0.05);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ---------- Chat ---------- */
+.chat-header {
+  flex-shrink: 0;
+  padding: 8px var(--gap);
+  border-bottom: 1px solid var(--tg-theme-secondary-bg-color);
+}
+
+.chat-select {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--tg-theme-secondary-bg-color);
+  background: var(--tg-theme-secondary-bg-color);
+  color: var(--tg-theme-text-color);
+  font-size: 14px;
+  font-weight: 500;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23999' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.4;
+  word-break: break-word;
+  position: relative;
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color);
+  border-bottom-right-radius: 4px;
+}
+
+.msg-agent {
+  align-self: flex-start;
+  background: var(--tg-theme-secondary-bg-color);
+  color: var(--tg-theme-text-color);
+  border-bottom-left-radius: 4px;
+}
+
+.msg-meta {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.msg-label {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  opacity: 0.7;
+}
+
+.chat-input-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px var(--gap);
+  padding-bottom: calc(8px + var(--safe-bottom));
+  border-top: 1px solid var(--tg-theme-secondary-bg-color);
+  background: var(--tg-theme-bg-color);
+}
+
+#chat-input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--tg-theme-secondary-bg-color);
+  background: var(--tg-theme-secondary-bg-color);
+  color: var(--tg-theme-text-color);
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+  max-height: 120px;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#chat-input:focus {
+  border-color: var(--tg-theme-link-color);
+}
+
+.send-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.2s, transform 0.1s;
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.send-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+/* ---------- Settings ---------- */
+.settings-group {
+  margin-bottom: 24px;
+}
+
+.settings-group h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--tg-theme-hint-color);
+  margin-bottom: 12px;
+}
+
+.setting-item {
+  margin-bottom: 12px;
+}
+
+.setting-item label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.setting-item input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--tg-theme-secondary-bg-color);
+  background: var(--tg-theme-secondary-bg-color);
+  color: var(--tg-theme-text-color);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.setting-item input:focus {
+  border-color: var(--tg-theme-link-color);
+}
+
+.setting-item input[readonly] {
+  opacity: 0.6;
+}
+
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+}
+
+.setting-toggle label {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.setting-toggle input[type="checkbox"] {
+  width: 44px;
+  height: 24px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: #ccc;
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.setting-toggle input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.setting-toggle input[type="checkbox"]:checked {
+  background: var(--tg-theme-button-color);
+}
+
+.setting-toggle input[type="checkbox"]:checked::after {
+  transform: translateX(20px);
+}
+
+.primary-btn {
+  width: 100%;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: none;
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  margin-bottom: 12px;
+}
+
+.primary-btn:active {
+  opacity: 0.8;
+}
+
+.danger-btn {
+  width: 100%;
+  padding: 14px;
+  border-radius: var(--radius);
+  border: none;
+  background: rgba(255, 59, 48, 0.1);
+  color: #ff3b30;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.danger-btn:active {
+  opacity: 0.8;
+}
+
+.link {
+  color: var(--tg-theme-link-color);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.link:active {
+  opacity: 0.7;
+}
+
+/* ---------- Animations ---------- */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.session-card, .msg {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ---------- Scrollbar (subtle) ---------- */
+.panel-scroll::-webkit-scrollbar,
+.chat-messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+.panel-scroll::-webkit-scrollbar-thumb,
+.chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.15);
+  border-radius: 2px;
+}
+
+/* ---------- Responsive ---------- */
+@media (min-width: 480px) {
+  .msg { max-width: 70%; }
+}
+
+/* ---------- Loading spinner ---------- */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--tg-theme-hint-color);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed;
+  bottom: calc(var(--tabs-h) + var(--safe-bottom) + 60px);
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--tg-theme-text-color);
+  color: var(--tg-theme-bg-color);
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: none;
+  z-index: 100;
+  white-space: nowrap;
+}
+
+.toast.show {
+  opacity: 0.9;
+  transform: translateX(-50%) translateY(0);
+}

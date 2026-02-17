@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 
 // ---------------------------------------------------------------------------
 // Test MessageQueue by loading server.js internals
@@ -17,7 +18,7 @@ if (!mqMatch) throw new Error("Could not extract MessageQueue from server.js");
 
 const MAX_HISTORY = 50;
 const log = { warn: () => {} };
-const MessageQueue = new Function("fs", "log", "MAX_HISTORY", `${mqMatch[1]}; return MessageQueue;`)(fs, log, MAX_HISTORY);
+const MessageQueue = new Function("fs", "path", "crypto", "log", "MAX_HISTORY", `${mqMatch[1]}; return MessageQueue;`)(fs, path, crypto, log, MAX_HISTORY);
 
 describe("MessageQueue", () => {
   let tmpFile;
@@ -85,78 +86,104 @@ describe("MessageQueue", () => {
     const after = Math.floor(Date.now() / 1000);
     assert.ok(msg.ts >= before && msg.ts <= after);
   });
+
+  it("pollSince returns only messages newer than sinceTs", () => {
+    const m1 = queue.enqueue("old", "user");
+    // Manually backdate m1
+    queue._pending[0].ts = Math.floor(Date.now() / 1000) - 100;
+    queue._save();
+    const cutoff = Math.floor(Date.now() / 1000) - 50;
+    queue.enqueue("new", "user");
+
+    const fresh = queue.pollSince(cutoff);
+    assert.equal(fresh.length, 1);
+    assert.equal(fresh[0].text, "new");
+    // Queue should be empty now (stale moved to delivered)
+    assert.equal(queue.pendingCount(), 0);
+  });
+
+  it("pendingCountSince counts only messages newer than sinceTs", () => {
+    queue.enqueue("old", "user");
+    queue._pending[0].ts = Math.floor(Date.now() / 1000) - 100;
+    queue._save();
+    const cutoff = Math.floor(Date.now() / 1000) - 50;
+    queue.enqueue("new", "user");
+
+    assert.equal(queue.pendingCount(), 2);
+    assert.equal(queue.pendingCountSince(cutoff), 1);
+  });
+
+  it("pendingCountSince with 0 returns all pending", () => {
+    queue.enqueue("a", "user");
+    queue.enqueue("b", "user");
+    assert.equal(queue.pendingCountSince(0), 2);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Test behavior flag description builders
+// Test interact tool description builder
 // ---------------------------------------------------------------------------
 
-describe("buildSendDesc", () => {
+describe("buildInteractDesc", () => {
   it("includes protocol rules when all flags are on", () => {
-    const d = buildSendDescWith(true, true, true);
+    const d = buildInteractDescWith(true, true, true, true);
     assert.ok(d.includes("PROTOCOL:"));
     assert.ok(d.includes("START of every session"));
-    assert.ok(d.includes("starting work on something"));
+    assert.ok(d.includes("starting work"));
     assert.ok(d.includes("final summary"));
-    assert.ok(d.includes("wait_for_reply"));
+    assert.ok(d.includes("periodically"));
   });
 
   it("omits disabled flag rules", () => {
-    const d = buildSendDescWith(false, false, false);
+    const d = buildInteractDescWith(false, false, false, false);
     assert.ok(d.includes("PROTOCOL:"));
-    assert.ok(!d.includes("START of every session"));
-    assert.ok(!d.includes("summary when starting"));
-    assert.ok(!d.includes("final summary"));
     // Should still have the always-on rules
     assert.ok(d.includes("milestones"));
-  });
-});
-
-describe("buildCheckDesc", () => {
-  it("includes polling protocol when AUTO_POLL is on", () => {
-    const d = buildCheckDescWith(true);
-    assert.ok(d.includes("PROTOCOL:"));
-    assert.ok(d.includes("every few minutes"));
+    assert.ok(!d.includes("START of every session"));
+    assert.ok(!d.includes("final summary"));
+    assert.ok(!d.includes("periodically"));
   });
 
-  it("omits polling protocol when AUTO_POLL is off", () => {
-    const d = buildCheckDescWith(false);
-    assert.ok(!d.includes("PROTOCOL:"));
+  it("always includes since_ts documentation", () => {
+    const d = buildInteractDescWith(false, false, false, false);
+    assert.ok(d.includes("since_ts"));
+    assert.ok(d.includes("now"));
   });
 
-  it("mentions wait parameter when AUTO_POLL is on", () => {
-    const d = buildCheckDescWith(true);
+  it("describes unified tool behavior", () => {
+    const d = buildInteractDescWith(true, true, true, true);
+    assert.ok(d.includes("message"));
     assert.ok(d.includes("wait"));
+    assert.ok(d.includes("pending"));
   });
 });
 
-// Replicate the builder functions for testing (avoids requiring server.js)
-function buildSendDescWith(autoStart, autoEnd, autoSummary) {
-  let d = "Send a message to the user via Telegram. Use for progress updates, " +
-    "questions, or results. Supports Markdown formatting.";
+// Replicate the builder function for testing (avoids requiring server.js)
+function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
+  let d = "Unified Telegram communication tool. Does everything in one call:\n" +
+    "• If `message` is provided: sends it to the user via Telegram (Markdown supported)\n" +
+    "• Always checks for and returns any pending user messages\n" +
+    "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
+    "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
+    "Response format: {ok, sent?, messages: [{text, ts}], pending, now}\n" +
+    "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
+    "- `messages`: new messages from user (empty array if none)\n" +
+    "- `pending`: count of remaining unread messages after this call\n\n" +
+    "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
+    "to know if a message is a fresh reply or was pending from before your question.";
+
   const rules = [];
   if (autoStart) rules.push(
-    "At the START of every session/task, send a brief greeting and plan summary.");
+    "At the START of every session/task, call with a brief greeting and plan summary.");
   if (autoSummary) rules.push(
-    "When starting work on something, send a concise summary of what you're about to do.");
-  rules.push("Send updates on major milestones or when you need input.");
+    "When starting work, call with a concise summary of what you're about to do.");
+  rules.push("Call with updates on major milestones or when you need input.");
   if (autoEnd) rules.push(
-    "Send a final summary when the task is done or the session ends, " +
-    "then call wait_for_reply to give the user a chance to send follow-up instructions before you finish.");
+    "When done, call with a final summary and wait=120 to give user a chance to reply.");
+  if (autoPoll) rules.push(
+    "During any task, call periodically (every few minutes) with no message to check for user input. " +
+    "Use wait=60-120 when idle to avoid rapid polling.");
   rules.push("Keep messages concise (phone-readable).");
-  if (rules.length) d += "\nPROTOCOL: " + rules.join(" ");
-  return d;
-}
-
-function buildCheckDescWith(autoPoll) {
-  let d = 'Lightweight status check \u2014 returns only {"pending": N}. Costs ~10 tokens. ' +
-    "Use this for routine checks; only call poll_messages when pending > 0.";
-  if (autoPoll) {
-    d += "\nPROTOCOL: During any task, call this regularly \u2014 at least every few minutes \u2014 " +
-      "to check if the user sent a message via Telegram. If pending > 0, call poll_messages. " +
-      "This lets the user provide feedback or corrections mid-task without restarting." +
-      " Use the wait parameter (e.g. wait=120) to block before checking \u2014 " +
-      "this avoids spamming rapid polls when idle.";
-  }
+  if (rules.length) d += "\n\nPROTOCOL: " + rules.join(" ");
   return d;
 }

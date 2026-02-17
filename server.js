@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // =============================================================================
-//  Telegram MCP Bridge Server
-//  Bridges a long-running AI agent session with a human via Telegram.
-//  Tools: send_message, poll_messages, check_status
+//  Telegram MCP Bridge Server v2
+//  Bridges AI agent sessions with a human via Telegram.
+//  Supports multiple machines/agents with session isolation.
+//  Single unified tool: interact
 // =============================================================================
 
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
@@ -14,22 +15,34 @@ const {
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
 
 // ---------------------------------------------------------------------------
 // Config from env
 // ---------------------------------------------------------------------------
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
-const QUEUE_FILE = process.env.TELEGRAM_MCP_QUEUE_FILE ||
-  path.join(require("os").homedir(), ".telegram_mcp_queue.json");
-const MAX_HISTORY = parseInt(process.env.TELEGRAM_MCP_MAX_HISTORY || "50", 10);
+const DATA_DIR = process.env.TELEGRAM_MCP_DATA_DIR ||
+  path.join(os.homedir(), ".telegram-mcp-bridge", "data");
+const MAX_HISTORY = parseInt(process.env.TELEGRAM_MCP_MAX_HISTORY || "200", 10);
 const POLL_INTERVAL_MS = parseInt(process.env.TELEGRAM_POLL_INTERVAL || "2000", 10);
 
+// Session identity — each MCP server instance is one session
+const SESSION_ID = process.env.TELEGRAM_SESSION_ID ||
+  `s-${crypto.randomBytes(3).toString("hex")}`;
+const MACHINE_LABEL = process.env.TELEGRAM_MACHINE_LABEL ||
+  os.hostname().slice(0, 20);
+const AGENT_LABEL = process.env.TELEGRAM_AGENT_LABEL || "agent";
+
 // Behavior flags (set in MCP config env block)
-const AUTO_SEND_START = process.env.TELEGRAM_AUTO_START !== "false"; // default: on
-const AUTO_SEND_END = process.env.TELEGRAM_AUTO_END !== "false";     // default: on
-const AUTO_SUMMARY = process.env.TELEGRAM_AUTO_SUMMARY !== "false";  // default: on
-const AUTO_POLL = process.env.TELEGRAM_AUTO_POLL !== "false";        // default: on
+const AUTO_SEND_START = process.env.TELEGRAM_AUTO_START !== "false";
+const AUTO_SEND_END = process.env.TELEGRAM_AUTO_END !== "false";
+const AUTO_SUMMARY = process.env.TELEGRAM_AUTO_SUMMARY !== "false";
+const AUTO_POLL = process.env.TELEGRAM_AUTO_POLL !== "false";
+
+// Legacy compat: old QUEUE_FILE env still works for single-session setups
+const LEGACY_QUEUE_FILE = process.env.TELEGRAM_MCP_QUEUE_FILE || "";
 
 // ---------------------------------------------------------------------------
 // Logging (stderr only — stdout is MCP stdio transport)
@@ -77,7 +90,6 @@ function tgApi(method, body) {
 async function sendTelegramMessage(text) {
   if (!BOT_TOKEN || !CHAT_ID) return false;
   try {
-    // Try Markdown first, fall back to plain text
     const res = await tgApi("sendMessage", {
       chat_id: parseInt(CHAT_ID, 10),
       text,
@@ -98,6 +110,8 @@ async function sendTelegramMessage(text) {
 
 // ---------------------------------------------------------------------------
 // Message queue — persisted to disk, minimal memory footprint
+// Supports multi-session: each session has its own pending queue,
+// but user messages are broadcast to all active sessions.
 // ---------------------------------------------------------------------------
 class MessageQueue {
   constructor(filePath) {
@@ -121,6 +135,7 @@ class MessageQueue {
 
   _save() {
     try {
+      fs.mkdirSync(path.dirname(this._file), { recursive: true });
       fs.writeFileSync(this._file, JSON.stringify({
         pending: this._pending,
         delivered: this._delivered.slice(-MAX_HISTORY),
@@ -132,7 +147,7 @@ class MessageQueue {
 
   enqueue(text, sender = "user") {
     const msg = {
-      id: Math.random().toString(36).slice(2, 10),
+      id: crypto.randomBytes(4).toString("hex"),
       text,
       sender,
       ts: Math.floor(Date.now() / 1000),
@@ -150,8 +165,31 @@ class MessageQueue {
     return msgs;
   }
 
+  // Poll only messages with ts > sinceTs (for timestamp-aware polling)
+  pollSince(sinceTs) {
+    if (!this._pending.length) return [];
+    const fresh = [];
+    const stale = [];
+    for (const m of this._pending) {
+      if (m.ts > sinceTs) fresh.push(m);
+      else stale.push(m);
+    }
+    // Move stale to delivered (agent already saw them before)
+    if (stale.length) this._delivered.push(...stale);
+    // Move fresh to delivered too (being returned now)
+    if (fresh.length) this._delivered.push(...fresh);
+    this._pending = [];
+    this._save();
+    return fresh;
+  }
+
   pendingCount() {
     return this._pending.length;
+  }
+
+  pendingCountSince(sinceTs) {
+    if (!sinceTs) return this._pending.length;
+    return this._pending.filter((m) => m.ts > sinceTs).length;
   }
 
   clear() {
@@ -161,7 +199,118 @@ class MessageQueue {
   }
 }
 
-const queue = new MessageQueue(QUEUE_FILE);
+// ---------------------------------------------------------------------------
+// Session registry — tracks all active sessions across machines
+// ---------------------------------------------------------------------------
+class SessionRegistry {
+  constructor(dataDir) {
+    this._dir = dataDir;
+    this._file = path.join(dataDir, "_sessions.json");
+    this._sessions = {};
+    this._load();
+  }
+
+  _load() {
+    try {
+      if (fs.existsSync(this._file)) {
+        this._sessions = JSON.parse(fs.readFileSync(this._file, "utf-8"));
+      }
+    } catch { /* ok */ }
+  }
+
+  _save() {
+    try {
+      fs.mkdirSync(this._dir, { recursive: true });
+      fs.writeFileSync(this._file, JSON.stringify(this._sessions, null, 2));
+    } catch (e) {
+      log.warn("Session registry save failed:", e.message);
+    }
+  }
+
+  register(sessionId, machine, agent) {
+    this._sessions[sessionId] = {
+      machine,
+      agent,
+      startedAt: Math.floor(Date.now() / 1000),
+      lastSeen: Math.floor(Date.now() / 1000),
+      active: true,
+    };
+    this._save();
+  }
+
+  heartbeat(sessionId) {
+    if (this._sessions[sessionId]) {
+      this._sessions[sessionId].lastSeen = Math.floor(Date.now() / 1000);
+      this._save();
+    }
+  }
+
+  deactivate(sessionId) {
+    if (this._sessions[sessionId]) {
+      this._sessions[sessionId].active = false;
+      this._save();
+    }
+  }
+
+  getActive() {
+    const now = Math.floor(Date.now() / 1000);
+    const result = {};
+    for (const [id, s] of Object.entries(this._sessions)) {
+      // Consider active if marked active and seen in last 10 minutes
+      if (s.active && (now - s.lastSeen) < 600) {
+        result[id] = s;
+      }
+    }
+    return result;
+  }
+
+  getAll() {
+    return { ...this._sessions };
+  }
+
+  getActiveSessionIds() {
+    return Object.keys(this.getActive());
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Initialize queue and registry
+// ---------------------------------------------------------------------------
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const queueFile = LEGACY_QUEUE_FILE ||
+  path.join(DATA_DIR, `queue-${SESSION_ID}.json`);
+const queue = new MessageQueue(queueFile);
+const registry = new SessionRegistry(DATA_DIR);
+
+// Register this session
+registry.register(SESSION_ID, MACHINE_LABEL, AGENT_LABEL);
+
+// ---------------------------------------------------------------------------
+// Broadcast user messages to all active session queues
+// ---------------------------------------------------------------------------
+function broadcastToSessions(text, sender) {
+  const activeIds = registry.getActiveSessionIds();
+  for (const sid of activeIds) {
+    if (sid === SESSION_ID) {
+      // Our own queue — enqueue directly
+      queue.enqueue(text, sender);
+    } else {
+      // Other session's queue — load, enqueue, save
+      const otherFile = path.join(DATA_DIR, `queue-${sid}.json`);
+      try {
+        const otherQueue = new MessageQueue(otherFile);
+        otherQueue.enqueue(text, sender);
+      } catch (e) {
+        log.warn(`Failed to broadcast to session ${sid}:`, e.message);
+      }
+    }
+  }
+  // If no active sessions (shouldn't happen), at least enqueue to our own
+  if (!activeIds.includes(SESSION_ID)) {
+    queue.enqueue(text, sender);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Telegram long-polling loop (runs in background)
@@ -193,7 +342,6 @@ async function pollTelegram() {
       lastUpdateId = update.update_id + 1;
       if (processedUpdates.has(update.update_id)) continue;
       processedUpdates.add(update.update_id);
-      // Keep set bounded
       if (processedUpdates.size > 1000) {
         const oldest = processedUpdates.values().next().value;
         processedUpdates.delete(oldest);
@@ -206,13 +354,31 @@ async function pollTelegram() {
         continue;
       }
       if (msg.text === "/start") {
+        const activeSessions = registry.getActive();
+        const sessionList = Object.entries(activeSessions)
+          .map(([id, s]) => `• \`${id}\` on *${s.machine}* (${s.agent})`)
+          .join("\n") || "None";
         await sendTelegramMessage(
-          `🔗 *Telegram MCP Bridge active*\nYour chat ID: \`${chatId}\`\nMessages you send here go to the agent.`
+          `🔗 *Telegram MCP Bridge v2*\nChat ID: \`${chatId}\`\n\n*Active sessions:*\n${sessionList}`
         );
         continue;
       }
-      queue.enqueue(msg.text, "user");
-      log.info(`Queued message from user: "${msg.text.slice(0, 50)}..."`);
+      // Handle /sessions command
+      if (msg.text === "/sessions") {
+        const all = registry.getAll();
+        const lines = Object.entries(all).map(([id, s]) => {
+          const status = s.active ? "🟢" : "🔴";
+          const ago = Math.floor(Date.now() / 1000) - s.lastSeen;
+          return `${status} \`${id}\` *${s.machine}* (${s.agent}) — ${ago}s ago`;
+        });
+        await sendTelegramMessage(
+          `*Sessions:*\n${lines.join("\n") || "None"}`
+        );
+        continue;
+      }
+      // Broadcast to all active sessions
+      broadcastToSessions(msg.text, "user");
+      log.info(`Queued message from user to ${registry.getActiveSessionIds().length} sessions: "${msg.text.slice(0, 50)}..."`);
     }
   } catch (e) {
     log.warn("Telegram poll error:", e.message);
@@ -226,9 +392,11 @@ async function startPollingLoop() {
   }
   pollingActive = true;
   await flushOldUpdates();
-  log.info("Telegram polling started");
+  log.info(`Telegram polling started (session=${SESSION_ID}, machine=${MACHINE_LABEL})`);
   while (pollingActive) {
     await pollTelegram();
+    // Heartbeat every poll cycle
+    registry.heartbeat(SESSION_ID);
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 }
@@ -237,87 +405,59 @@ async function startPollingLoop() {
 // MCP Server
 // ---------------------------------------------------------------------------
 const server = new Server(
-  { name: "telegram-bridge", version: "1.0.0" },
+  { name: "telegram-bridge", version: "2.0.0" },
   { capabilities: { tools: {} } }
 );
 
-// Build tool descriptions dynamically based on active behavior flags
-function buildSendDesc() {
-  let d = "Send a message to the user via Telegram. Use for progress updates, " +
-    "questions, or results. Supports Markdown formatting.";
+// Build interact tool description dynamically
+function buildInteractDesc() {
+  let d = "Unified Telegram communication tool. Does everything in one call:\n" +
+    "• If `message` is provided: sends it to the user via Telegram (Markdown supported)\n" +
+    "• Always checks for and returns any pending user messages\n" +
+    "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
+    "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
+    "Response format: {ok, sent?, messages: [{text, ts}], pending, now}\n" +
+    "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
+    "- `messages`: new messages from user (empty array if none)\n" +
+    "- `pending`: count of remaining unread messages after this call\n\n" +
+    "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
+    "to know if a message is a fresh reply or was pending from before your question.";
+
   const rules = [];
   if (AUTO_SEND_START) rules.push(
-    "At the START of every session/task, send a brief greeting and plan summary.");
+    "At the START of every session/task, call with a brief greeting and plan summary.");
   if (AUTO_SUMMARY) rules.push(
-    "When starting work on something, send a concise summary of what you're about to do.");
-  rules.push("Send updates on major milestones or when you need input.");
+    "When starting work, call with a concise summary of what you're about to do.");
+  rules.push("Call with updates on major milestones or when you need input.");
   if (AUTO_SEND_END) rules.push(
-    "Send a final summary when the task is done or the session ends, " +
-    "then call wait_for_reply to give the user a chance to send follow-up instructions before you finish.");
+    "When done, call with a final summary and wait=120 to give user a chance to reply.");
+  if (AUTO_POLL) rules.push(
+    "During any task, call periodically (every few minutes) with no message to check for user input. " +
+    "Use wait=60-120 when idle to avoid rapid polling.");
   rules.push("Keep messages concise (phone-readable).");
-  if (rules.length) d += "\nPROTOCOL: " + rules.join(" ");
-  return d;
-}
-
-function buildCheckDesc() {
-  let d = 'Lightweight status check \u2014 returns only {"pending": N}. Costs ~10 tokens. ' +
-    "Use this for routine checks; only call poll_messages when pending > 0.";
-  if (AUTO_POLL) {
-    d += "\nPROTOCOL: During any task, call this regularly \u2014 at least every few minutes \u2014 " +
-      "to check if the user sent a message via Telegram. If pending > 0, call poll_messages. " +
-      "This lets the user provide feedback or corrections mid-task without restarting." +
-      " Use the wait parameter (e.g. wait=120) to block before checking \u2014 " +
-      "this avoids spamming rapid polls when idle.";
-  }
+  if (rules.length) d += "\n\nPROTOCOL: " + rules.join(" ");
   return d;
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "send_message",
-      description: buildSendDesc(),
+      name: "interact",
+      description: buildInteractDesc(),
       inputSchema: {
         type: "object",
         properties: {
-          text: { type: "string", description: "Message text (Markdown supported)" },
-        },
-        required: ["text"],
-      },
-    },
-    {
-      name: "poll_messages",
-      description:
-        "Retrieve new messages from the user. Returns [] if none (minimal context cost). " +
-        "Each message is returned exactly once. Use check_status first to avoid unnecessary polling.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "check_status",
-      description: buildCheckDesc(),
-      inputSchema: {
-        type: "object",
-        properties: {
+          message: {
+            type: "string",
+            description: "Message to send to user via Telegram (Markdown). Omit to just check for messages.",
+          },
           wait: {
             type: "number",
-            description: "Seconds to wait before checking (blocks the call). Use 60-120 for routine idle polling.",
+            description: "Seconds to wait for user reply (0=instant check, 60-120 for idle polling, up to 300). Default 0.",
           },
-        },
-      },
-    },
-    {
-      name: "wait_for_reply",
-      description:
-        "Block until the user sends a Telegram message, then return it. " +
-        "Use this after asking the user a question via send_message — " +
-        "it holds the call server-side until a reply arrives (no polling needed). " +
-        "Returns the message(s) directly. Times out after the specified duration (default 120s, max 300s).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          timeout: {
+          since_ts: {
             type: "number",
-            description: "Max seconds to wait for a reply (default 120, max 300).",
+            description: "Unix timestamp — only return messages newer than this. Use the `now` value from the previous response.",
           },
         },
       },
@@ -328,20 +468,75 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  if (name === "interact") {
+    const now = Math.floor(Date.now() / 1000);
+    const message = args?.message || null;
+    const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
+    const sinceTs = parseInt(args?.since_ts, 10) || 0;
+
+    // Step 1: Send message if provided
+    let sent = null;
+    if (message) {
+      // Prefix with session label for multi-machine clarity
+      const prefix = `[${MACHINE_LABEL}/${AGENT_LABEL}]`;
+      const fullText = `${prefix} ${message}`;
+      const ok = await sendTelegramMessage(fullText);
+      sent = ok;
+      if (!ok) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ ok: false, error: "send failed", now }),
+          }],
+        };
+      }
+    }
+
+    // Step 2: Wait if requested
+    if (wait > 0) {
+      const deadline = Date.now() + wait * 1000;
+      while (Date.now() < deadline) {
+        const count = sinceTs ? queue.pendingCountSince(sinceTs) : queue.pendingCount();
+        if (count > 0) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    // Step 3: Collect messages
+    let msgs;
+    if (sinceTs) {
+      msgs = queue.pollSince(sinceTs);
+    } else {
+      msgs = queue.poll();
+    }
+
+    // Slim response — only text + ts (no id/sender clutter)
+    const slim = msgs.map((m) => ({ text: m.text, ts: m.ts }));
+
+    const result = {
+      ok: true,
+      now,
+      messages: slim,
+      pending: queue.pendingCount(),
+    };
+    if (sent !== null) result.sent = sent;
+
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+
+  // Legacy tool support — map old tools to interact behavior
   if (name === "send_message") {
     const text = args?.text;
     if (!text) return { content: [{ type: "text", text: '{"error":"empty message"}' }] };
-    const ok = await sendTelegramMessage(text);
-    const result = ok ? { sent: true } : { sent: false, error: "Failed — check token/chat ID" };
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    const prefix = `[${MACHINE_LABEL}/${AGENT_LABEL}]`;
+    const ok = await sendTelegramMessage(`${prefix} ${text}`);
+    return { content: [{ type: "text", text: JSON.stringify({ sent: ok, now: Math.floor(Date.now() / 1000) }) }] };
   }
 
   if (name === "poll_messages") {
     const msgs = queue.poll();
-    if (!msgs.length) return { content: [{ type: "text", text: "[]" }] };
-    // Return slim payload — only id, text, ts
-    const slim = msgs.map((m) => ({ id: m.id, text: m.text, ts: m.ts }));
-    return { content: [{ type: "text", text: JSON.stringify(slim) }] };
+    const slim = msgs.map((m) => ({ text: m.text, ts: m.ts }));
+    return { content: [{ type: "text", text: JSON.stringify({ messages: slim, now: Math.floor(Date.now() / 1000) }) }] };
   }
 
   if (name === "check_status") {
@@ -353,7 +548,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
     return {
-      content: [{ type: "text", text: JSON.stringify({ pending: queue.pendingCount() }) }],
+      content: [{ type: "text", text: JSON.stringify({ pending: queue.pendingCount(), now: Math.floor(Date.now() / 1000) }) }],
     };
   }
 
@@ -363,22 +558,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     while (Date.now() < deadline) {
       if (queue.pendingCount() > 0) {
         const msgs = queue.poll();
-        const slim = msgs.map((m) => ({ id: m.id, text: m.text, ts: m.ts }));
-        return { content: [{ type: "text", text: JSON.stringify(slim) }] };
+        const slim = msgs.map((m) => ({ text: m.text, ts: m.ts }));
+        return { content: [{ type: "text", text: JSON.stringify({ messages: slim, now: Math.floor(Date.now() / 1000) }) }] };
       }
       await new Promise((r) => setTimeout(r, 500));
     }
-    return { content: [{ type: "text", text: JSON.stringify({ timeout: true, waited: timeout }) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ timeout: true, waited: timeout, now: Math.floor(Date.now() / 1000) }) }] };
   }
 
   return { content: [{ type: "text", text: '{"error":"unknown tool"}' }] };
 });
 
 // ---------------------------------------------------------------------------
+// Graceful shutdown — mark session inactive
+// ---------------------------------------------------------------------------
+function shutdown() {
+  pollingActive = false;
+  registry.deactivate(SESSION_ID);
+  log.info(`Session ${SESSION_ID} deactivated`);
+}
+process.on("SIGINT", () => { shutdown(); process.exit(0); });
+process.on("SIGTERM", () => { shutdown(); process.exit(0); });
+process.on("exit", shutdown);
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  log.info("Starting Telegram MCP Bridge...");
+  log.info(`Starting Telegram MCP Bridge v2 (session=${SESSION_ID}, machine=${MACHINE_LABEL}, agent=${AGENT_LABEL})`);
 
   // Start Telegram polling in background
   startPollingLoop().catch((e) => log.error("Polling loop crashed:", e.message));
