@@ -93,7 +93,7 @@ function tgApi(method, body) {
 // ---------------------------------------------------------------------------
 let topicId = null; // message_thread_id for this session's topic
 
-// Persisted topic map: { sessionLabel: topicId }
+// Persisted topic map: { sessionId: topicId }
 function getTopicMapFile() { return path.join(DATA_DIR, "_topics.json"); }
 
 function loadTopicMap() {
@@ -117,11 +117,11 @@ function saveTopicMap(map) {
 async function ensureTopic() {
   if (!BOT_TOKEN || !CHAT_ID) return null;
 
-  // Check if we already have a topic for this session label
+  // Check if we already have a topic for this session
   const map = loadTopicMap();
-  if (map[SESSION_LABEL]) {
-    topicId = map[SESSION_LABEL];
-    log.info(`Reusing topic ${topicId} for ${SESSION_LABEL}`);
+  if (map[SESSION_ID]) {
+    topicId = map[SESSION_ID];
+    log.info(`Reusing topic ${topicId} for ${SESSION_ID} (${SESSION_LABEL})`);
     return topicId;
   }
 
@@ -130,7 +130,7 @@ async function ensureTopic() {
     let chatIdNum = parseInt(CHAT_ID, 10);
     let res = await tgApi("createForumTopic", {
       chat_id: chatIdNum,
-      name: `🤖 ${SESSION_LABEL}`,
+      name: `🤖 ${SESSION_LABEL} [${SESSION_ID}]`,
     });
 
     // Handle chat migration (group upgraded to supergroup)
@@ -141,15 +141,15 @@ async function ensureTopic() {
       chatIdNum = parseInt(CHAT_ID, 10);
       res = await tgApi("createForumTopic", {
         chat_id: chatIdNum,
-        name: `🤖 ${SESSION_LABEL}`,
+        name: `🤖 ${SESSION_LABEL} [${SESSION_ID}]`,
       });
     }
 
     if (res.ok && res.result) {
       topicId = res.result.message_thread_id;
-      map[SESSION_LABEL] = topicId;
+      map[SESSION_ID] = topicId;
       saveTopicMap(map);
-      log.info(`Created topic ${topicId} for ${SESSION_LABEL}`);
+      log.info(`Created topic ${topicId} for ${SESSION_ID} (${SESSION_LABEL})`);
       return topicId;
     }
     log.warn("createForumTopic failed:", JSON.stringify(res));
@@ -161,12 +161,12 @@ async function ensureTopic() {
   return null;
 }
 
-// Build reverse map: topicId → sessionLabel (for routing incoming messages)
+// Build reverse map: topicId → sessionId (for routing incoming messages)
 function buildTopicToSessionMap() {
   const map = loadTopicMap();
   const reverse = {};
-  for (const [label, tid] of Object.entries(map)) {
-    reverse[String(tid)] = label;
+  for (const [sid, tid] of Object.entries(map)) {
+    reverse[String(tid)] = sid;
   }
   return reverse;
 }
@@ -416,9 +416,9 @@ function routeMessageToSession(text, sender, msgTopicId) {
   // If message is in a specific topic, route to that session only
   if (msgTopicId) {
     const topicToSession = buildTopicToSessionMap();
-    const targetLabel = topicToSession[String(msgTopicId)];
+    const targetSessionId = topicToSession[String(msgTopicId)];
 
-    if (targetLabel === SESSION_LABEL) {
+    if (targetSessionId === SESSION_ID) {
       // This message is for us
       queue.enqueue(text, sender);
       return true;
