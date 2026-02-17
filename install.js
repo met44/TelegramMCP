@@ -469,20 +469,36 @@ async function main() {
     if (cont !== "y") process.exit(1);
   }
 
-  // --- Get chat ID ---
+  // --- Get chat ID (Forum Group setup) ---
   console.log("");
-  console.log(`  ${C.bold}Now we need your Chat ID.${C.reset}`);
+  console.log(`  ${C.bold}Now we need a Telegram group with Topics enabled.${C.reset}`);
+  console.log(`  ${C.bold}Each agent session gets its own topic — full isolation.${C.reset}`);
+  console.log("");
+  console.log(`  ${C.bold}Do you already have a forum group set up?${C.reset}`);
+  console.log(`    ${C.bold}1)${C.reset} No, help me create one`);
+  console.log(`    ${C.bold}2)${C.reset} Yes, I have the group Chat ID ready`);
+  console.log("");
 
-  if (botUsername) {
-    console.log(`  ${C.bold}Opening a chat with your bot...${C.reset}`);
-    openUrl(`https://t.me/${botUsername}`);
-    await new Promise((r) => setTimeout(r, 1500));
+  const hasGroup = (await ask("Enter choice [1-2]: ")).trim();
+
+  if (hasGroup !== "2") {
+    console.log("");
+    console.log(`  ${C.cyan}${C.bold}Follow these steps in Telegram:${C.reset}`);
+    console.log("");
+    console.log(`  ${C.cyan}1.${C.reset} Open Telegram and tap ${C.bold}New Group${C.reset}`);
+    console.log(`  ${C.cyan}2.${C.reset} Add your bot ${C.bold}@${botUsername || "your_bot"}${C.reset} as a member`);
+    console.log(`  ${C.cyan}3.${C.reset} Name it something like ${C.bold}Agent Bridge${C.reset} and create it`);
+    console.log(`  ${C.cyan}4.${C.reset} Open ${C.bold}Group Settings${C.reset} (tap group name at top)`);
+    console.log(`  ${C.cyan}5.${C.reset} Tap ${C.bold}Edit${C.reset} (pencil icon) → scroll down`);
+    console.log(`  ${C.cyan}6.${C.reset} Enable ${C.bold}Topics${C.reset} (this converts it to a forum supergroup)`);
+    console.log(`  ${C.cyan}7.${C.reset} Go to ${C.bold}Administrators${C.reset} → tap your bot → enable:`);
+    console.log(`     • ${C.bold}Manage Topics${C.reset}`);
+    console.log(`     • ${C.bold}Delete Messages${C.reset} (optional but recommended)`);
+    console.log(`  ${C.cyan}8.${C.reset} Send any message in the group (e.g. ${C.bold}hello${C.reset})`);
+    console.log("");
+    info("The installer will detect the group automatically...");
+    console.log("");
   }
-
-  console.log("");
-  console.log(`  ${C.bold}Send any message to your bot${C.reset} (e.g. type ${C.bold}hello${C.reset})`);
-  info("The installer will detect it automatically...");
-  console.log("");
 
   // Flush old updates and track offset
   let detectOffset = 0;
@@ -494,51 +510,114 @@ async function main() {
     }
   } catch { /* ignore */ }
 
-  // Poll for new message
   let chatId = "";
-  let chatUser = "";
-  const pollStart = Date.now();
-  const pollTimeout = 120000; // 2 minutes
+  let chatTitle = "";
 
-  process.stdout.write(`  ${C.cyan}⏳${C.reset} ${C.dim}Waiting for your message...${C.reset}`);
+  if (hasGroup === "2") {
+    chatId = (await ask("Enter your group Chat ID (starts with -): ")).trim();
+  } else {
+    // Poll for new message from the group
+    const pollStart = Date.now();
+    const pollTimeout = 180000; // 3 minutes
 
-  while (Date.now() - pollStart < pollTimeout) {
-    try {
-      const res = await tgApi(botToken, "getUpdates", { offset: detectOffset, timeout: 5 });
-      if (res.ok && res.result) {
-        for (const u of res.result) {
-          detectOffset = u.update_id + 1;
-          const msg = u.message;
-          if (!msg || !msg.chat) continue;
-          chatId = String(msg.chat.id);
-          chatUser = msg.chat.first_name || "";
-          // Acknowledge
-          await tgApi(botToken, "getUpdates", { offset: detectOffset });
-          break;
+    process.stdout.write(`  ${C.cyan}⏳${C.reset} ${C.dim}Waiting for a message in the group...${C.reset}`);
+
+    while (Date.now() - pollStart < pollTimeout) {
+      try {
+        const res = await tgApi(botToken, "getUpdates", { offset: detectOffset, timeout: 5 });
+        if (res.ok && res.result) {
+          for (const u of res.result) {
+            detectOffset = u.update_id + 1;
+            const msg = u.message;
+            if (!msg || !msg.chat) continue;
+            // Look for supergroup (forum groups are supergroups)
+            if (msg.chat.type === "supergroup" || msg.chat.type === "group") {
+              chatId = String(msg.chat.id);
+              chatTitle = msg.chat.title || "";
+              await tgApi(botToken, "getUpdates", { offset: detectOffset });
+              break;
+            }
+          }
         }
-      }
-      if (chatId) break;
-    } catch { /* retry */ }
-    process.stdout.write(".");
-    await new Promise((r) => setTimeout(r, 2000));
+        if (chatId) break;
+      } catch { /* retry */ }
+      process.stdout.write(".");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    console.log(""); // newline after dots
+
+    if (!chatId) {
+      warn("Auto-detect timed out.");
+      console.log("");
+      info("Find it manually: open this URL in a browser:");
+      info(`https://api.telegram.org/bot${botToken}/getUpdates`);
+      info('Look for: "chat":{"id":-100XXXXXXXXXX,"type":"supergroup"}');
+      console.log("");
+      chatId = (await ask("Enter your group Chat ID: ")).trim();
+    }
   }
-  console.log(""); // newline after dots
 
   if (chatId) {
-    ok(`Detected! Chat ID: ${chatId} (${chatUser})`);
-  } else {
-    warn("Auto-detect timed out.");
-    console.log("");
-    info("Find it manually: open this URL in a browser:");
-    info(`https://api.telegram.org/bot${botToken}/getUpdates`);
-    info('Look for: "chat":{"id":XXXXXXXX}');
-    console.log("");
-    chatId = (await ask("Enter your chat ID: ")).trim();
+    ok(`Detected! Chat ID: ${chatId}${chatTitle ? ` (${chatTitle})` : ""}`);
   }
 
   if (!chatId || !/^-?\d+$/.test(chatId)) {
-    fail("Invalid chat ID.");
+    fail("Invalid chat ID. Group IDs typically start with -100...");
     process.exit(1);
+  }
+
+  // --- Verify it's a forum group ---
+  info("Verifying group setup...");
+  let isForumGroup = false;
+  try {
+    const chatInfo = await tgApi(botToken, "getChat", { chat_id: parseInt(chatId, 10) });
+    if (chatInfo.ok && chatInfo.result) {
+      const chat = chatInfo.result;
+      if (chat.is_forum) {
+        ok("Forum topics are enabled ✓");
+        isForumGroup = true;
+      } else {
+        warn("Topics are NOT enabled on this group.");
+        console.log("");
+        console.log(`  ${C.bold}To enable Topics:${C.reset}`);
+        console.log(`  1. Open the group in Telegram`);
+        console.log(`  2. Tap the group name → Edit → enable Topics`);
+        console.log("");
+        const cont = (await ask("Continue anyway? [y/N]: ")).trim().toLowerCase();
+        if (cont !== "y") process.exit(1);
+      }
+    }
+  } catch (e) {
+    warn("Could not verify group: " + e.message);
+  }
+
+  // --- Verify bot is admin with manage_topics ---
+  try {
+    const me = await tgApi(botToken, "getMe");
+    if (me.ok) {
+      const member = await tgApi(botToken, "getChatMember", {
+        chat_id: parseInt(chatId, 10),
+        user_id: me.result.id,
+      });
+      if (member.ok && member.result) {
+        const status = member.result.status;
+        if (status === "administrator" || status === "creator") {
+          const canManageTopics = member.result.can_manage_topics;
+          if (canManageTopics) {
+            ok("Bot is admin with Manage Topics permission ✓");
+          } else {
+            warn("Bot is admin but missing 'Manage Topics' permission.");
+            info("Go to Group Settings → Administrators → your bot → enable Manage Topics");
+          }
+        } else {
+          warn("Bot is not an administrator in this group.");
+          info("Go to Group Settings → Administrators → Add your bot as admin");
+          info("Enable at least: Manage Topics");
+        }
+      }
+    }
+  } catch (e) {
+    warn("Could not check bot permissions: " + e.message);
   }
 
   // --- Send test message ---
@@ -546,21 +625,20 @@ async function main() {
   try {
     const testRes = await tgApi(botToken, "sendMessage", {
       chat_id: parseInt(chatId, 10),
-      text: "🔗 *Telegram MCP Bridge installed!*\n\nYour agent can now reach you here.\nChat ID: `" + chatId + "`",
+      text: "🔗 *Telegram MCP Bridge installed!*\n\nEach agent session will create its own topic here.\nChat ID: `" + chatId + "`",
       parse_mode: "Markdown",
     });
-    if (testRes.ok) ok("Test message sent — check your Telegram!");
+    if (testRes.ok) ok("Test message sent — check your Telegram group!");
     else warn("Test message failed, continuing.");
   } catch {
-    // Retry without markdown
     try {
       await tgApi(botToken, "sendMessage", {
         chat_id: parseInt(chatId, 10),
-        text: "Telegram MCP Bridge installed! Your agent can now reach you here. Chat ID: " + chatId,
+        text: "Telegram MCP Bridge installed! Each agent session will create its own topic here. Chat ID: " + chatId,
       });
       ok("Test message sent (plain text)");
     } catch {
-      warn("Test message failed, continuing.");
+      warn("Test message failed. Make sure the bot is in the group and is an admin.");
     }
   }
 
@@ -570,22 +648,28 @@ async function main() {
   const agentPrompt = `# Telegram Bridge — Agent Instructions
 
 You have access to a Telegram MCP bridge for async communication with the user.
+Each session has its own topic in a Telegram forum group — your messages are isolated.
 
-## Tools
-- \`send_message\` — Send a message to the user via Telegram (Markdown supported)
-- \`poll_messages\` — Retrieve new messages (returns \`[]\` if none — ~3 tokens)
-- \`check_status\` — Returns \`{"pending": N}\` (~10 tokens). Cheapest check.
+## Tool: \`interact\`
+Single unified tool for all communication:
+- \`interact({message: "text"})\` — Send a message
+- \`interact({})\` — Check for new messages
+- \`interact({wait: 120})\` — Wait up to 120s for a reply
+- \`interact({message: "text", wait: 60, since_ts: N})\` — Send + wait + filter stale
+
+Response: \`{ok, sent?, messages: [{text, ts}], pending, now}\`
+Pass \`now\` as \`since_ts\` on next call to only get newer messages.
 
 ## Protocol
-1. **Start**: \`send_message\` to confirm you've begun and share your plan.
-2. **During work**: \`check_status\` every ~10-15 steps. Only \`poll_messages\` if pending > 0.
-3. **Need input**: \`send_message\` your question, continue if possible, check periodically.
-4. **Done**: \`send_message\` with summary of results.
+1. **Start**: \`interact\` with a greeting and plan summary.
+2. **During work**: \`interact\` periodically (every few minutes) to check for input.
+3. **Need input**: \`interact\` with your question + \`wait: 120\`.
+4. **Done**: \`interact\` with a final summary + \`wait: 120\`.
 
 ## Tips
-- Keep Telegram messages concise (phone-readable).
+- Keep messages concise (phone-readable).
+- Use \`since_ts\` to avoid reading stale messages from before your question.
 - Batch updates — don't spam multiple messages.
-- Acknowledge received messages with a brief confirmation via \`send_message\`.
 `;
   fs.writeFileSync(path.join(INSTALL_DIR, "AGENT_PROMPT.md"), agentPrompt);
   ok(`Agent prompt saved to ${path.join(INSTALL_DIR, "AGENT_PROMPT.md")}`);
@@ -652,12 +736,14 @@ You have access to a Telegram MCP bridge for async communication with the user.
   }
   console.log(`  ${C.bold}Bot:${C.reset}          @${botUsername || "unknown"}`);
   console.log(`  ${C.bold}Chat ID:${C.reset}      ${chatId}`);
+  console.log(`  ${C.bold}Mode:${C.reset}         Forum Topics (per-session isolation)`);
   console.log("");
   console.log(`  ${C.bold}Next steps:${C.reset}`);
   info("1. Restart your agent / IDE to load the new MCP server");
   info(`2. Add the contents of ${path.join(INSTALL_DIR, "AGENT_PROMPT.md")}`);
   info("   to your system prompt (CLAUDE.md / GEMINI.md / .cursorrules / rules)");
   info("3. Ask your agent to send you a Telegram message!");
+  info("   → It will auto-create a topic in your forum group");
   console.log("");
   if (IS_WIN) {
     console.log(`  ${C.bold}Uninstall:${C.reset}  ${C.dim}${path.join(INSTALL_DIR, "uninstall.bat")}${C.reset}`);

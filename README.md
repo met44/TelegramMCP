@@ -48,20 +48,20 @@ The installer will:
 ## How It Works
 
 ```
-                                    ┌──────────────────┐
-┌─────────────┐   Telegram API      │  MCP Server       │   MCP stdio    ┌───────────┐
-│  You (phone) │ ◄────────────────► │  (session A)      │ ◄────────────► │  Agent A   │
-│              │                    ├──────────────────┤                 └───────────┘
-│  Mini App    │                    │  MCP Server       │   MCP stdio    ┌───────────┐
-│  (webapp)    │                    │  (session B)      │ ◄────────────► │  Agent B   │
-└─────────────┘                    └──────────────────┘                 └───────────┘
+                                    Forum Group (Topics)
+                                    ┌──────────────────────────┐
+┌─────────────┐   Telegram API      │  📋 General (broadcast)   │
+│  You (phone) │ ◄────────────────► │  💬 Topic: PC-A/cascade   │ ◄──► MCP Server A ◄──► Agent A
+│              │                    │  💬 Topic: Laptop/agent   │ ◄──► MCP Server B ◄──► Agent B
+│  Mini App    │                    │  💬 Topic: Server/worker  │ ◄──► MCP Server C ◄──► Agent C
+└─────────────┘                    └──────────────────────────┘
 ```
 
-The server runs alongside each agent and:
-- **Polls Telegram** in the background (long-polling, no webhooks)
-- **Queues messages** to disk per session so nothing is lost
-- **Broadcasts** user messages to all active sessions
-- **Exposes 1 unified tool** (`interact`) to the agent via MCP
+Each agent session gets its own **Telegram Forum Topic**:
+- **Reply in a topic** → only that agent receives your message
+- **Post in General** → broadcast to all active agents
+- **Full isolation** — no message mixing between sessions
+- **Native Telegram UI** — topics are a built-in Telegram feature
 
 ## The `interact` Tool
 
@@ -109,7 +109,7 @@ interact({ message?, wait?, since_ts? })
 
 ## Multi-Machine Support
 
-Each MCP server instance registers as a **session** with a unique ID, machine label, and agent label. User messages are broadcast to all active sessions.
+Each MCP server instance registers as a **session** and auto-creates its own **Forum Topic** in the group. The topic is named after the machine/agent label (e.g. `🤖 WorkPC/cascade`).
 
 Configure per-instance identity via env vars:
 
@@ -117,31 +117,39 @@ Configure per-instance identity via env vars:
 "env": {
   "TELEGRAM_BOT_TOKEN": "...",
   "TELEGRAM_CHAT_ID": "...",
-  "TELEGRAM_SESSION_ID": "desktop-1",
   "TELEGRAM_MACHINE_LABEL": "WorkPC",
   "TELEGRAM_AGENT_LABEL": "cascade"
 }
 ```
 
-Agent messages appear in Telegram as `[WorkPC/cascade] Your message here`.
+- **Reply in a topic** → only that session's agent receives the message
+- **Post in General** → broadcast to all active sessions
+- Topics are reused across restarts (same machine/agent label = same topic)
 
-### Telegram Commands
+### Telegram Commands (in General topic)
 
 - `/start` — Show bridge info and active sessions
 - `/sessions` — List all sessions with status
 
+### Setup Requirements
+
+The bot needs to be in a **supergroup with Topics enabled** and have **admin rights** with at least:
+- **Manage Topics** — to create topics for new sessions
+- The installer guides you through this setup step-by-step
+
 ## Telegram Mini App
 
-A lightweight web app for managing your agent sessions, deployed automatically to GitHub Pages.
+A lightweight dashboard deployed to GitHub Pages, accessible as a Telegram Mini App.
 
 **Features:**
-- View all active/offline sessions across machines
-- Chat interface with message history
-- Send messages to specific sessions or broadcast to all
-- Auto-refreshing session status
-- Native Telegram Mini App integration (theme, haptics)
+- View group connection status
+- Send messages to specific session topics or broadcast to General
+- Quick-access control panel inside Telegram
+- Native Telegram Mini App integration (theme colors, safe areas)
 
-Access it by setting up a [Telegram Mini App](https://core.telegram.org/bots/webapps) pointing to your GitHub Pages URL.
+Per-session conversations happen natively in Telegram Topics — the Mini App is a convenience overlay for quick actions.
+
+Access it by setting up a [Telegram Mini App](https://core.telegram.org/bots/webapps) via BotFather, pointing to your GitHub Pages URL.
 
 ## Configure
 
