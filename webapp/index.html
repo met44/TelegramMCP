@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Telegram MCP Bridge</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <div class="header-row">
+        <h1>🔗 MCP Bridge</h1>
+        <button id="btn-refresh" class="icon-btn" title="Refresh">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+      </div>
+      <div class="status-bar" id="status-bar">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+    </header>
+
+    <!-- Tab bar -->
+    <nav id="tabs">
+      <button class="tab active" data-tab="sessions">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Sessions
+      </button>
+      <button class="tab" data-tab="chat">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat
+      </button>
+      <button class="tab" data-tab="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+    </nav>
+
+    <!-- Sessions panel -->
+    <div id="panel-sessions" class="panel active">
+      <div class="panel-scroll">
+        <div id="sessions-list" class="card-list">
+          <div class="empty-state">
+            <div class="empty-icon">📡</div>
+            <p>No active sessions</p>
+            <p class="hint">Start an agent with the MCP bridge to see sessions here</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat panel -->
+    <div id="panel-chat" class="panel">
+      <div class="chat-header">
+        <select id="chat-target" class="chat-select">
+          <option value="__broadcast__">📢 All Sessions</option>
+        </select>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="empty-state">
+          <div class="empty-icon">💬</div>
+          <p>No messages yet</p>
+          <p class="hint">Messages between you and your agents appear here</p>
+        </div>
+      </div>
+      <div class="chat-input-row">
+        <textarea id="chat-input" placeholder="Message your agents..." rows="1"></textarea>
+        <button id="btn-send" class="send-btn" disabled>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Settings panel -->
+    <div id="panel-settings" class="panel">
+      <div class="panel-scroll">
+        <div class="settings-group">
+          <h3>Connection</h3>
+          <div class="setting-item">
+            <label for="setting-bot-token">Bot Token</label>
+            <input type="password" id="setting-bot-token" placeholder="123456:ABC-DEF..." autocomplete="off">
+          </div>
+          <div class="setting-item">
+            <label for="setting-chat-id">Chat ID</label>
+            <input type="text" id="setting-chat-id" placeholder="123456789" autocomplete="off">
+          </div>
+          <div class="setting-item">
+            <label for="setting-data-dir">Data Directory</label>
+            <input type="text" id="setting-data-dir" placeholder="~/.telegram-mcp-bridge/data" readonly>
+            <p class="hint">Set via TELEGRAM_MCP_DATA_DIR env var on the server</p>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h3>Behavior</h3>
+          <div class="setting-toggle">
+            <label>Auto-refresh sessions</label>
+            <input type="checkbox" id="setting-auto-refresh" checked>
+          </div>
+          <div class="setting-item">
+            <label for="setting-refresh-interval">Refresh interval (seconds)</label>
+            <input type="number" id="setting-refresh-interval" value="10" min="3" max="120">
+          </div>
+        </div>
+        <div class="settings-group">
+          <h3>About</h3>
+          <p class="hint">Telegram MCP Bridge v2.0</p>
+          <p class="hint">Manage your AI agent sessions from Telegram.</p>
+          <a href="https://github.com/met44/telegram-mcp-bridge" class="link" target="_blank">GitHub Repository →</a>
+        </div>
+        <button id="btn-save-settings" class="primary-btn">Save Settings</button>
+        <button id="btn-clear-settings" class="danger-btn">Clear All Data</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

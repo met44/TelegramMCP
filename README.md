@@ -1,12 +1,20 @@
-# Telegram MCP Bridge
+# Telegram MCP Bridge v2
 
 [![CI](https://github.com/met44/telegram-mcp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/met44/telegram-mcp-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-brightgreen.svg)](https://nodejs.org)
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets long-running AI agent sessions communicate with you via Telegram. Send messages to the agent and receive updates — all from your phone.
+A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets AI agents communicate with you via Telegram. Supports **multiple machines and agents** simultaneously with session isolation. Includes a **Telegram Mini App** for managing sessions from your phone.
 
 **Zero config needed** — the installer handles everything, including Telegram bot creation.
+
+## What's New in v2
+
+- **Single `interact` tool** — replaces 4 separate tools (send/poll/check/wait). One call does it all.
+- **Multi-machine support** — run agents on multiple machines, each with its own session. Messages are broadcast to all active sessions.
+- **Timestamp-aware polling** — agents can distinguish fresh replies from stale messages using `since_ts`.
+- **Telegram Mini App** — manage sessions, view chat history, and send messages from a web UI inside Telegram.
+- **Auto CI/CD** — GitHub Actions runs tests on 3 OSes × 3 Node versions, then deploys the webapp to GitHub Pages.
 
 ## Quick Install
 
@@ -40,35 +48,100 @@ The installer will:
 ## How It Works
 
 ```
-┌─────────────┐     Telegram API     ┌──────────────┐     MCP stdio     ┌───────────┐
-│  You (phone) │ ◄──────────────────► │  MCP Server   │ ◄────────────────► │  AI Agent  │
-└─────────────┘                       └──────────────┘                     └───────────┘
+                                    ┌──────────────────┐
+┌─────────────┐   Telegram API      │  MCP Server       │   MCP stdio    ┌───────────┐
+│  You (phone) │ ◄────────────────► │  (session A)      │ ◄────────────► │  Agent A   │
+│              │                    ├──────────────────┤                 └───────────┘
+│  Mini App    │                    │  MCP Server       │   MCP stdio    ┌───────────┐
+│  (webapp)    │                    │  (session B)      │ ◄────────────► │  Agent B   │
+└─────────────┘                    └──────────────────┘                 └───────────┘
 ```
 
-The server runs alongside your agent and:
+The server runs alongside each agent and:
 - **Polls Telegram** in the background (long-polling, no webhooks)
-- **Queues messages** to disk so nothing is lost
-- **Exposes 4 tools** to the agent via MCP
+- **Queues messages** to disk per session so nothing is lost
+- **Broadcasts** user messages to all active sessions
+- **Exposes 1 unified tool** (`interact`) to the agent via MCP
 
-### Tools
+## The `interact` Tool
 
-| Tool | What it does | Context Cost |
-|------|-------------|-------------|
-| `check_status` | Returns `{"pending": N}`, optional `wait` param | ~10 tokens |
-| `poll_messages` | Returns new messages (or `[]`) | ~3 tokens when empty |
-| `send_message` | Sends a Telegram message to you | ~15 tokens |
-| `wait_for_reply` | Blocks until user replies via Telegram (or timeout) | ~15 tokens |
+One tool replaces the old send/poll/check/wait pattern:
 
-### Agent Protocol
+```
+interact({ message?, wait?, since_ts? })
+→ { ok, sent?, messages: [{text, ts}], pending, now }
+```
 
-The protocol is **embedded in the tool descriptions** — agents follow it automatically with no extra prompting:
+| Parameter | Description |
+|-----------|-------------|
+| `message` | *(optional)* Text to send to user via Telegram (Markdown) |
+| `wait` | *(optional)* Seconds to block waiting for a reply (0–300) |
+| `since_ts` | *(optional)* Only return messages newer than this timestamp |
 
-1. **Session start** — send a greeting + plan summary
-2. **During work** — `check_status` every few minutes; `poll_messages` only when `pending > 0`
-3. **Milestones** — send progress updates
-4. **Done** — send a final summary
+| Response field | Description |
+|----------------|-------------|
+| `now` | Server timestamp — pass as `since_ts` on next call |
+| `messages` | Array of new messages `[{text, ts}]` |
+| `pending` | Remaining unread messages after this call |
+| `sent` | Whether the message was sent (only if `message` was provided) |
 
-This keeps context usage minimal (~10 tokens per check) while staying responsive.
+### Why One Tool?
+
+- **No forgotten polls** — every call checks for messages, even when sending
+- **No stale messages** — `since_ts` lets agents ignore messages from before their question
+- **Minimal context** — empty check costs ~15 tokens; no separate check→poll dance
+- **Blocking waits** — `wait=120` holds the call server-side, no rapid polling loops
+
+### Example Agent Flow
+
+```
+1. interact({message: "Starting task: refactor auth module"})
+   → {ok:true, sent:true, messages:[], pending:0, now:1700000000}
+
+2. ... agent works for a while ...
+
+3. interact({since_ts: 1700000000})                    // routine check
+   → {ok:true, messages:[], pending:0, now:1700000060}
+
+4. interact({message: "Done! Summary: ...", wait: 120, since_ts: 1700000060})
+   → {ok:true, sent:true, messages:[{text:"looks good!", ts:1700000100}], pending:0, now:1700000120}
+```
+
+## Multi-Machine Support
+
+Each MCP server instance registers as a **session** with a unique ID, machine label, and agent label. User messages are broadcast to all active sessions.
+
+Configure per-instance identity via env vars:
+
+```json
+"env": {
+  "TELEGRAM_BOT_TOKEN": "...",
+  "TELEGRAM_CHAT_ID": "...",
+  "TELEGRAM_SESSION_ID": "desktop-1",
+  "TELEGRAM_MACHINE_LABEL": "WorkPC",
+  "TELEGRAM_AGENT_LABEL": "cascade"
+}
+```
+
+Agent messages appear in Telegram as `[WorkPC/cascade] Your message here`.
+
+### Telegram Commands
+
+- `/start` — Show bridge info and active sessions
+- `/sessions` — List all sessions with status
+
+## Telegram Mini App
+
+A lightweight web app for managing your agent sessions, deployed automatically to GitHub Pages.
+
+**Features:**
+- View all active/offline sessions across machines
+- Chat interface with message history
+- Send messages to specific sessions or broadcast to all
+- Auto-refreshing session status
+- Native Telegram Mini App integration (theme, haptics)
+
+Access it by setting up a [Telegram Mini App](https://core.telegram.org/bots/webapps) pointing to your GitHub Pages URL.
 
 ## Configure
 
@@ -78,27 +151,22 @@ After installation, use the configure command to toggle behavior flags:
 node telegram-mcp-install.js configure
 ```
 
-This will auto-detect your existing installation and let you interactively toggle:
-- **Auto-greet** — send greeting at session start
-- **Auto-summary** — send summary when starting new work
-- **Auto-end** — send summary when done
-- **Auto-poll** — regularly check for user messages
-
-You can also update `server.js` to the latest version from here.
-
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | *(required)* | Bot token from BotFather |
 | `TELEGRAM_CHAT_ID` | *(required)* | Your Telegram chat ID |
+| `TELEGRAM_SESSION_ID` | *(auto-generated)* | Unique session identifier |
+| `TELEGRAM_MACHINE_LABEL` | *(hostname)* | Machine name shown in messages |
+| `TELEGRAM_AGENT_LABEL` | `agent` | Agent name shown in messages |
+| `TELEGRAM_MCP_DATA_DIR` | `~/.telegram-mcp-bridge/data` | Data directory for queues |
 | `TELEGRAM_POLL_INTERVAL` | `2000` | Telegram poll interval (ms) |
-| `TELEGRAM_MCP_QUEUE_FILE` | `~/.telegram_mcp_queue.json` | Queue file path |
-| `TELEGRAM_MCP_MAX_HISTORY` | `50` | Delivered messages to retain |
+| `TELEGRAM_MCP_MAX_HISTORY` | `200` | Delivered messages to retain |
 
 ### Behavior Flags
 
-All default to **on**. Set to `"false"` in your MCP config's `env` block to disable, or use `node telegram-mcp-install.js configure`.
+All default to **on**. Set to `"false"` to disable.
 
 | Variable | Description |
 |----------|-------------|
@@ -107,64 +175,46 @@ All default to **on**. Set to `"false"` in your MCP config's `env` block to disa
 | `TELEGRAM_AUTO_SUMMARY` | Summary when starting new work |
 | `TELEGRAM_AUTO_POLL` | Poll for user messages regularly |
 
-Example — disable auto-polling but keep start/end messages:
-```json
-"env": {
-  "TELEGRAM_BOT_TOKEN": "...",
-  "TELEGRAM_CHAT_ID": "...",
-  "TELEGRAM_AUTO_POLL": "false"
-}
-```
+### Legacy Compatibility
 
-## Token Paste Issues
-
-If pasting the bot token crashes your terminal, save it to a text file and enter the file path instead. The installer supports both.
-
-## Security & Trust
-
-The single-file installer (`dist/telegram-mcp-install.js`) embeds `server.js` as base64 for convenience. If you're concerned about what's in the blob:
-
-1. **Clone the repo** and use `install.js` directly — it prefers the adjacent `server.js` source file over the embedded base64
-2. **Verify the build** — after `npm run build`, run `npm run verify` to confirm the embedded code matches `server.js` (SHA-256 comparison)
-3. **Read the source** — `server.js` is a single readable file with zero external dependencies beyond `@modelcontextprotocol/sdk`
-
-The build also generates `dist/server.js.sha256` for independent verification.
+The old 4-tool interface (`send_message`, `poll_messages`, `check_status`, `wait_for_reply`) still works via built-in legacy handlers. Existing agents will continue to function without changes.
 
 ## Development
 
 ```
 telegram-mcp-bridge/
-├── server.js          # MCP server (standalone)
+├── server.js          # MCP server (standalone, unified interact tool)
 ├── install.js         # Installer + configure command
 ├── build.js           # Builds single-file distributable
 ├── verify.js          # Verifies embedded base64 matches source
+├── webapp/            # Telegram Mini App (static SPA)
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
 ├── test/              # Automated tests
 │   ├── server.test.js
 │   ├── build.test.js
 │   └── config.test.js
+├── .github/workflows/
+│   └── ci.yml         # CI + GitHub Pages deploy
 └── dist/
-    ├── telegram-mcp-install.js  # Single-file installer (server.js embedded)
-    └── server.js.sha256         # Checksum for verification
+    ├── telegram-mcp-install.js
+    └── server.js.sha256
 ```
 
 ```bash
 npm install            # Install dev dependencies
-npm test               # Run all tests
+npm test               # Run all tests (34 tests)
 npm run build          # Rebuild distributable
 npm run verify         # Verify embedded code matches source
 ```
 
-### Updating a deployed install
+### CI/CD
 
-```bash
-npm run build
-# Windows:
-copy server.js %USERPROFILE%\.telegram-mcp-bridge\server.js
-# macOS/Linux:
-cp server.js ~/.telegram-mcp-bridge/server.js
-```
-
-Or use `node telegram-mcp-install.js configure` and select "Update server.js to latest".
+On push to `main`:
+1. **Tests** run on Ubuntu/Windows/macOS × Node 18/20/22
+2. **Syntax check** validates all JS files
+3. **Webapp deploys** to GitHub Pages automatically
 
 ## Uninstall
 

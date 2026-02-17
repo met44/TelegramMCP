@@ -26,8 +26,8 @@ describe("build.js", () => {
     const decoded = Buffer.from(match[1], "base64").toString("utf-8");
     assert.ok(decoded.includes("#!/usr/bin/env node"), "decoded should start with shebang");
     assert.ok(decoded.includes("MessageQueue"), "decoded should contain MessageQueue class");
-    assert.ok(decoded.includes("send_message"), "decoded should contain send_message tool");
-    assert.ok(decoded.includes("check_status"), "decoded should contain check_status tool");
+    assert.ok(decoded.includes("interact"), "decoded should contain interact tool");
+    assert.ok(decoded.includes("SessionRegistry"), "decoded should contain SessionRegistry class");
   });
 
   it("built file has valid JavaScript syntax", () => {
