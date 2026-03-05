@@ -23,6 +23,20 @@ if (!injectMatch) throw new Error("Could not extract injectConfig from install.j
 
 const injectConfig = new Function("fs", "path", "info", `${injectMatch[1]}; return injectConfig;`)(fs, path, () => {});
 
+// Extract Windows/home config path helpers used by AGENTS
+const helperMatch = installSrc.match(/(function uniqueNonEmpty\([\s\S]*?function resolveWindowsRoamingConfigPath\([\s\S]*?\n\})/);
+if (!helperMatch) throw new Error("Could not extract config path helpers from install.js");
+
+function createPathHelpers({ env = process.env, homedir = os.homedir(), isWin = process.platform === "win32" } = {}) {
+  return new Function("fs", "os", "path", "process", "IS_WIN", `${helperMatch[1]}; return { uniqueNonEmpty, getWindowsHomeCandidates, getHomeCandidates, pickConfigPath, resolveHomeConfigPath, resolveWindowsRoamingConfigPath };`) (
+    fs,
+    { homedir: () => homedir },
+    path,
+    { env },
+    isWin
+  );
+}
+
 // Extract BEHAVIOR_FLAGS
 const flagsMatch = installSrc.match(/(const BEHAVIOR_FLAGS = \[[\s\S]*?\];)/);
 if (!flagsMatch) throw new Error("Could not extract BEHAVIOR_FLAGS from install.js");
@@ -32,8 +46,14 @@ const BEHAVIOR_FLAGS = new Function(`${flagsMatch[1]}; return BEHAVIOR_FLAGS;`)(
 const agentsMatch = installSrc.match(/(const AGENTS = \[[\s\S]*?\];)/);
 if (!agentsMatch) throw new Error("Could not extract AGENTS from install.js");
 
-const AGENTS = new Function("os", "path", "IS_WIN", "IS_MAC", `${agentsMatch[1]}; return AGENTS;`)(
-  os, path, process.platform === "win32", process.platform === "darwin"
+const defaultPathHelpers = createPathHelpers();
+const AGENTS = new Function("resolveHomeConfigPath", "resolveWindowsRoamingConfigPath", "os", "path", "IS_WIN", "IS_MAC", `${agentsMatch[1]}; return AGENTS;`)(
+  defaultPathHelpers.resolveHomeConfigPath,
+  defaultPathHelpers.resolveWindowsRoamingConfigPath,
+  os,
+  path,
+  process.platform === "win32",
+  process.platform === "darwin"
 );
 
 describe("makeServerEntry", () => {
@@ -132,6 +152,39 @@ describe("BEHAVIOR_FLAGS", () => {
       assert.ok(flag.label, "flag should have label");
       assert.ok(flag.desc, "flag should have desc");
       assert.ok(flag.key.startsWith("TELEGRAM_"), "key should start with TELEGRAM_");
+    }
+  });
+});
+
+describe("config path helpers", () => {
+  it("prefers a real roaming config under the user profile when APPDATA is sandboxed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cfg-path-test-"));
+    try {
+      const realHome = path.join(root, "real-home");
+      const fakeHome = path.join(root, "fake-home");
+      const fakeAppData = path.join(root, "fake-appdata");
+      const realConfig = path.join(realHome, "AppData", "Roaming", "Claude", "claude_desktop_config.json");
+
+      fs.mkdirSync(path.dirname(realConfig), { recursive: true });
+      fs.mkdirSync(fakeAppData, { recursive: true });
+      fs.writeFileSync(realConfig, "{}", "utf-8");
+
+      const helpers = createPathHelpers({
+        env: {
+          APPDATA: fakeAppData,
+          USERPROFILE: realHome,
+          HOME: fakeHome,
+          HOMEDRIVE: path.parse(realHome).root.replace(/\\$/, ""),
+          HOMEPATH: realHome.slice(path.parse(realHome).root.length - 1),
+        },
+        homedir: fakeHome,
+        isWin: true,
+      });
+
+      const resolved = helpers.resolveWindowsRoamingConfigPath("Claude", "claude_desktop_config.json");
+      assert.equal(resolved, realConfig);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

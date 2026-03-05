@@ -91,23 +91,66 @@ function openUrl(url) {
 // ---------------------------------------------------------------------------
 // Agent definitions
 // ---------------------------------------------------------------------------
+function uniqueNonEmpty(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.trim()))];
+}
+
+function getWindowsHomeCandidates() {
+  return uniqueNonEmpty([
+    process.env.USERPROFILE,
+    process.env.HOME,
+    process.env.HOMEDRIVE && process.env.HOMEPATH
+      ? path.join(process.env.HOMEDRIVE, process.env.HOMEPATH)
+      : "",
+    os.homedir(),
+  ]);
+}
+
+function getHomeCandidates() {
+  if (IS_WIN) return getWindowsHomeCandidates();
+  return uniqueNonEmpty([process.env.HOME, os.homedir()]);
+}
+
+function pickConfigPath(candidates) {
+  const paths = uniqueNonEmpty(candidates);
+  for (const candidate of paths) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return paths[0] || "";
+}
+
+function resolveHomeConfigPath(...parts) {
+  return pickConfigPath(getHomeCandidates().map((home) => path.join(home, ...parts)));
+}
+
+function resolveWindowsRoamingConfigPath(...parts) {
+  const candidates = [];
+  if (process.env.APPDATA) {
+    candidates.push(path.join(process.env.APPDATA, ...parts));
+  }
+  for (const home of getWindowsHomeCandidates()) {
+    candidates.push(path.join(home, "AppData", "Roaming", ...parts));
+  }
+  return pickConfigPath(candidates);
+}
+
 const AGENTS = [
-  { id: 1, name: "Claude Code", configPath: () => path.join(os.homedir(), ".claude.json"), key: "mcpServers" },
+  { id: 1, name: "Claude Code", configPath: () => resolveHomeConfigPath(".claude.json"), key: "mcpServers" },
   {
     id: 2, name: "Claude Desktop", key: "mcpServers",
     configPath: () => {
-      if (IS_WIN) return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Claude", "claude_desktop_config.json");
+      if (IS_WIN) return resolveWindowsRoamingConfigPath("Claude", "claude_desktop_config.json");
       if (IS_MAC) return path.join(os.homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json");
       return path.join(os.homedir(), ".config", "Claude", "claude_desktop_config.json");
     },
   },
-  { id: 3, name: "Cursor", configPath: () => path.join(os.homedir(), ".cursor", "mcp.json"), key: "mcpServers" },
-  { id: 4, name: "Windsurf", configPath: () => path.join(os.homedir(), ".codeium", "windsurf", "mcp_config.json"), key: "mcpServers" },
+  { id: 3, name: "Cursor", configPath: () => resolveHomeConfigPath(".cursor", "mcp.json"), key: "mcpServers" },
+  { id: 4, name: "Windsurf", configPath: () => resolveHomeConfigPath(".codeium", "windsurf", "mcp_config.json"), key: "mcpServers" },
   {
     id: 5, name: "VS Code (Copilot)", configPath: () => "__vscode__", key: "servers",
   },
-  { id: 6, name: "Gemini CLI", configPath: () => path.join(os.homedir(), ".gemini", "settings.json"), key: "mcpServers" },
-  { id: 7, name: "Cline", configPath: () => path.join(os.homedir(), ".cline", "mcp_config.json"), key: "mcpServers" },
+  { id: 6, name: "Gemini CLI", configPath: () => resolveHomeConfigPath(".gemini", "settings.json"), key: "mcpServers" },
+  { id: 7, name: "Cline", configPath: () => resolveHomeConfigPath(".cline", "mcp_config.json"), key: "mcpServers" },
   { id: 8, name: "Other / Manual", configPath: () => "__manual__", key: "mcpServers" },
 ];
 
