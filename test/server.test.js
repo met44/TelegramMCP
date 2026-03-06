@@ -118,6 +118,41 @@ describe("MessageQueue", () => {
     queue.enqueue("b", "user");
     assert.equal(queue.pendingCountSince(0), 2);
   });
+
+  it("enqueues message with image data", () => {
+    const img = { base64: "abc123", mimeType: "image/jpeg" };
+    const msg = queue.enqueue("caption", "user", img);
+    assert.equal(msg.text, "caption");
+    assert.deepEqual(msg.image, img);
+    assert.equal(queue.pendingCount(), 1);
+  });
+
+  it("poll returns image data but strips it from delivered", () => {
+    const img = { base64: "abc123", mimeType: "image/jpeg" };
+    queue.enqueue("photo", "user", img);
+    const msgs = queue.poll();
+    assert.equal(msgs.length, 1);
+    assert.deepEqual(msgs[0].image, img);
+    // Reload from disk — delivered should not contain image
+    const queue2 = new MessageQueue(tmpFile);
+    assert.equal(queue2._delivered.length, 1);
+    assert.equal(queue2._delivered[0].image, undefined);
+  });
+
+  it("pollSince strips image from delivered", () => {
+    const img = { base64: "xyz", mimeType: "image/png" };
+    queue.enqueue("pic", "user", img);
+    const msgs = queue.pollSince(0);
+    assert.equal(msgs.length, 1);
+    assert.deepEqual(msgs[0].image, img);
+    const queue2 = new MessageQueue(tmpFile);
+    assert.equal(queue2._delivered[0].image, undefined);
+  });
+
+  it("enqueue without image does not add image field", () => {
+    const msg = queue.enqueue("plain", "user");
+    assert.equal(msg.image, undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -154,7 +189,7 @@ describe("buildInteractDesc", () => {
     const d = buildInteractDescWith(true, true, true, true);
     assert.ok(d.includes("message"));
     assert.ok(d.includes("wait"));
-    assert.ok(d.includes("pending"));
+    assert.ok(d.includes("image"));
   });
 });
 
@@ -165,10 +200,9 @@ function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
     "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
-    "Response format: {ok, sent?, messages: [{text, ts}], pending, now}\n" +
+    "Response format: {ok, now, messages: [{text, ts, image?}]}\n" +
     "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
-    "- `messages`: new messages from user (empty array if none)\n" +
-    "- `pending`: count of remaining unread messages after this call\n\n" +
+    "- `messages`: new messages from user (empty array if none)\n\n" +
     "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
     "to know if a message is a fresh reply or was pending from before your question.";
 

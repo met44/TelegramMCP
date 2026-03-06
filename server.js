@@ -33,7 +33,15 @@ const SESSION_ID = process.env.TELEGRAM_SESSION_ID ||
   `s-${crypto.randomBytes(3).toString("hex")}`;
 const MACHINE_LABEL = process.env.TELEGRAM_MACHINE_LABEL ||
   os.hostname().slice(0, 20);
-const AGENT_LABEL = process.env.TELEGRAM_AGENT_LABEL || "agent";
+function deriveAgentLabel() {
+  try {
+    const cwd = process.cwd();
+    const base = path.basename(cwd);
+    if (base && base.length > 1 && !/^[A-Z]:?$/i.test(base)) return base.slice(0, 30);
+  } catch { /* ignore */ }
+  return "cascade";
+}
+const AGENT_LABEL = process.env.TELEGRAM_AGENT_LABEL || deriveAgentLabel();
 const SESSION_LABEL = `${MACHINE_LABEL}/${AGENT_LABEL}`;
 
 // Behavior flags (set in MCP config env block)
@@ -89,6 +97,49 @@ function tgApi(method, body) {
 }
 
 // ---------------------------------------------------------------------------
+// Telegram file helpers (download + multipart upload)
+// ---------------------------------------------------------------------------
+function downloadTgFile(filePath) {
+  return new Promise((resolve, reject) => {
+    https.get(`https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`, { timeout: 30000 }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+    }).on("error", reject).on("timeout", function () { this.destroy(); reject(new Error("timeout")); });
+  });
+}
+
+function tgApiMultipart(method, fields, fileField, filePath, fileName) {
+  return new Promise((resolve, reject) => {
+    const boundary = `----FormBoundary${crypto.randomBytes(8).toString("hex")}`;
+    const fileData = fs.readFileSync(filePath);
+    let preamble = "";
+    for (const [key, val] of Object.entries(fields)) {
+      preamble += `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`;
+    }
+    const header = `--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+    const footer = `\r\n--${boundary}--\r\n`;
+    const payload = Buffer.concat([Buffer.from(preamble + header), fileData, Buffer.from(footer)]);
+    const opts = {
+      hostname: "api.telegram.org",
+      path: `/bot${BOT_TOKEN}/${method}`,
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": payload.length },
+      timeout: 60000,
+    };
+    const req = https.request(opts, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => { try { resolve(JSON.parse(data)); } catch { reject(new Error(`Invalid JSON: ${data.slice(0, 200)}`)); } });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Topic management — each session gets its own forum topic
 // ---------------------------------------------------------------------------
 let topicId = null; // message_thread_id for this session's topic
@@ -130,7 +181,7 @@ async function ensureTopic() {
     let chatIdNum = parseInt(CHAT_ID, 10);
     let res = await tgApi("createForumTopic", {
       chat_id: chatIdNum,
-      name: `🤖 ${SESSION_LABEL} [${SESSION_ID}]`,
+      name: `🤖 ${SESSION_LABEL}`,
     });
 
     // Handle chat migration (group upgraded to supergroup)
@@ -141,7 +192,7 @@ async function ensureTopic() {
       chatIdNum = parseInt(CHAT_ID, 10);
       res = await tgApi("createForumTopic", {
         chat_id: chatIdNum,
-        name: `🤖 ${SESSION_LABEL} [${SESSION_ID}]`,
+        name: `🤖 ${SESSION_LABEL}`,
       });
     }
 
@@ -195,6 +246,38 @@ async function sendToTopic(text) {
   }
 }
 
+// Send photo to this session's topic (or General as fallback)
+// ---------------------------------------------------------------------------
+async function sendPhotoToTopic(imageSource, caption) {
+  if (!BOT_TOKEN || !CHAT_ID) return false;
+  const chatIdNum = parseInt(CHAT_ID, 10);
+  try {
+    if (imageSource.startsWith("http://") || imageSource.startsWith("https://")) {
+      const body = { chat_id: chatIdNum, photo: imageSource };
+      if (caption) { body.caption = caption; body.parse_mode = "Markdown"; }
+      if (topicId) body.message_thread_id = topicId;
+      const res = await tgApi("sendPhoto", body);
+      if (res.ok) return true;
+      // Retry without parse_mode
+      if (caption) { delete body.parse_mode; return !!(await tgApi("sendPhoto", body)).ok; }
+      return false;
+    }
+    if (fs.existsSync(imageSource)) {
+      const fields = { chat_id: String(chatIdNum) };
+      if (caption) fields.caption = caption;
+      if (topicId) fields.message_thread_id = String(topicId);
+      const res = await tgApiMultipart("sendPhoto", fields, "photo", imageSource, path.basename(imageSource));
+      return !!res.ok;
+    }
+    log.error("Image source not found:", imageSource);
+    return false;
+  } catch (e) {
+    log.error("sendPhoto failed:", e.message);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Send to General topic (no message_thread_id)
 async function sendToGeneral(text) {
   if (!BOT_TOKEN || !CHAT_ID) return false;
@@ -252,13 +335,14 @@ class MessageQueue {
     }
   }
 
-  enqueue(text, sender = "user") {
+  enqueue(text, sender = "user", image = null) {
     const msg = {
       id: crypto.randomBytes(4).toString("hex"),
       text,
       sender,
       ts: Math.floor(Date.now() / 1000),
     };
+    if (image) msg.image = image;
     this._pending.push(msg);
     this._save();
     return msg;
@@ -267,7 +351,7 @@ class MessageQueue {
   poll() {
     if (!this._pending.length) return [];
     const msgs = this._pending.splice(0);
-    this._delivered.push(...msgs);
+    this._delivered.push(...msgs.map(m => { const { image, ...rest } = m; return rest; }));
     this._save();
     return msgs;
   }
@@ -281,10 +365,9 @@ class MessageQueue {
       if (m.ts > sinceTs) fresh.push(m);
       else stale.push(m);
     }
-    // Move stale to delivered (agent already saw them before)
-    if (stale.length) this._delivered.push(...stale);
-    // Move fresh to delivered too (being returned now)
-    if (fresh.length) this._delivered.push(...fresh);
+    const strip = (m) => { const { image, ...rest } = m; return rest; };
+    if (stale.length) this._delivered.push(...stale.map(strip));
+    if (fresh.length) this._delivered.push(...fresh.map(strip));
     this._pending = [];
     this._save();
     return fresh;
@@ -412,7 +495,7 @@ registry.register(SESSION_ID, MACHINE_LABEL, AGENT_LABEL, null);
 // ---------------------------------------------------------------------------
 // Route incoming messages by topic
 // ---------------------------------------------------------------------------
-function routeMessageToSession(text, sender, msgTopicId) {
+function routeMessageToSession(text, sender, msgTopicId, image = null) {
   // If message is in a specific topic, route to that session only
   if (msgTopicId) {
     const topicToSession = buildTopicToSessionMap();
@@ -420,7 +503,7 @@ function routeMessageToSession(text, sender, msgTopicId) {
 
     if (targetSessionId === SESSION_ID) {
       // This message is for us
-      queue.enqueue(text, sender);
+      queue.enqueue(text, sender, image);
       return true;
     }
     // Not for us — check if it's for another session on this machine
@@ -429,27 +512,27 @@ function routeMessageToSession(text, sender, msgTopicId) {
   }
 
   // Message in General topic (no thread_id) — broadcast to all sessions
-  broadcastToAllSessions(text, sender);
+  broadcastToAllSessions(text, sender, image);
   return true;
 }
 
-function broadcastToAllSessions(text, sender) {
+function broadcastToAllSessions(text, sender, image = null) {
   const activeIds = registry.getActiveSessionIds();
   for (const sid of activeIds) {
     if (sid === SESSION_ID) {
-      queue.enqueue(text, sender);
+      queue.enqueue(text, sender, image);
     } else {
       const otherFile = path.join(DATA_DIR, `queue-${sid}.json`);
       try {
         const otherQueue = new MessageQueue(otherFile);
-        otherQueue.enqueue(text, sender);
+        otherQueue.enqueue(text, sender, image);
       } catch (e) {
         log.warn(`Failed to broadcast to session ${sid}:`, e.message);
       }
     }
   }
   if (!activeIds.includes(SESSION_ID)) {
-    queue.enqueue(text, sender);
+    queue.enqueue(text, sender, image);
   }
 }
 
@@ -488,7 +571,7 @@ async function pollTelegram() {
         processedUpdates.delete(oldest);
       }
       const msg = update.message;
-      if (!msg || !msg.text) continue;
+      if (!msg) continue;
       const chatId = String(msg.chat.id);
       if (CHAT_ID && chatId !== CHAT_ID) continue;
 
@@ -521,9 +604,26 @@ async function pollTelegram() {
         }
       }
 
+      // Handle photos
+      let image = null;
+      if (msg.photo && msg.photo.length > 0) {
+        try {
+          const photo = msg.photo[msg.photo.length - 1];
+          const fileInfo = await tgApi("getFile", { file_id: photo.file_id });
+          if (fileInfo.ok && fileInfo.result.file_path) {
+            const buf = await downloadTgFile(fileInfo.result.file_path);
+            const ext = path.extname(fileInfo.result.file_path).toLowerCase();
+            image = { base64: buf.toString("base64"), mimeType: ext === ".png" ? "image/png" : "image/jpeg" };
+          }
+        } catch (e) { log.warn("Photo download failed:", e.message); }
+      }
+
+      const text = msg.text || msg.caption || "";
+      if (!text && !image) continue;
+
       // Route message based on topic
-      routeMessageToSession(msg.text, "user", msgTopicId);
-      log.info(`Message from user in topic ${msgTopicId || "General"}: "${msg.text.slice(0, 50)}"`);
+      routeMessageToSession(text, "user", msgTopicId, image);
+      log.info(`Message from user in topic ${msgTopicId || "General"}: "${(text || "[photo]").slice(0, 50)}"`);
     }
   } catch (e) {
     log.warn("Telegram poll error:", e.message);
@@ -573,10 +673,9 @@ function buildInteractDesc() {
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
     "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
-    "Response format: {ok, sent?, messages: [{text, ts}], pending, now}\n" +
+    "Response format: {ok, now, messages: [{text, ts, image?}]}\n" +
     "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
-    "- `messages`: new messages from user (empty array if none)\n" +
-    "- `pending`: count of remaining unread messages after this call\n\n" +
+    "- `messages`: new messages from user (empty array if none)\n\n" +
     "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
     "to know if a message is a fresh reply or was pending from before your question.";
 
@@ -608,6 +707,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Message to send to user via Telegram (Markdown). Omit to just check for messages.",
           },
+          image: {
+            type: "string",
+            description: "Image to send: URL (https://...) or local file path. If message is also provided, it becomes the caption.",
+          },
           wait: {
             type: "number",
             description: "Seconds to wait for user reply (0=instant check, 60-120 for idle polling, up to 300). Default 0.",
@@ -631,18 +734,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
     const sinceTs = parseInt(args?.since_ts, 10) || 0;
 
-    // Step 1: Send message if provided — goes to this session's topic
-    let sent = null;
-    if (message) {
-      const ok = await sendToTopic(message);
-      sent = ok;
+    const imageArg = args?.image || null;
+
+    // Step 1: Send message/image if provided — goes to this session's topic
+    if (imageArg) {
+      const ok = await sendPhotoToTopic(imageArg, message || "");
       if (!ok) {
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({ ok: false, error: "send failed", now }),
-          }],
-        };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "image send failed", now }) }] };
+      }
+    } else if (message) {
+      const ok = await sendToTopic(message);
+      if (!ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "send failed", now }) }] };
       }
     }
 
@@ -664,17 +767,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       msgs = queue.poll();
     }
 
-    const slim = msgs.map((m) => ({ text: m.text, ts: m.ts }));
+    const slim = msgs.map((m) => {
+      const entry = { text: m.text, ts: m.ts };
+      if (m.image) entry.image = true;
+      return entry;
+    });
 
-    const result = {
-      ok: true,
-      now,
-      messages: slim,
-      pending: queue.pendingCount(),
-    };
-    if (sent !== null) result.sent = sent;
+    const result = { ok: true, now, messages: slim };
+    const content = [{ type: "text", text: JSON.stringify(result) }];
 
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    // Append image content blocks for received photos
+    for (const m of msgs) {
+      if (m.image) {
+        content.push({ type: "image", data: m.image.base64, mimeType: m.image.mimeType });
+      }
+    }
+
+    return { content };
   }
 
   // Legacy tool support
