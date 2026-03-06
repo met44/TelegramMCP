@@ -56,6 +56,15 @@ const AGENTS = new Function("resolveHomeConfigPath", "resolveWindowsRoamingConfi
   process.platform === "darwin"
 );
 
+// Extract installer flow helpers
+const tokenChoiceMatch = installSrc.match(/(function resolveTokenSetupChoice\([\s\S]*?\n\})/);
+if (!tokenChoiceMatch) throw new Error("Could not extract resolveTokenSetupChoice from install.js");
+const resolveTokenSetupChoice = new Function(`${tokenChoiceMatch[1]}; return resolveTokenSetupChoice;`)();
+
+const chatChoiceMatch = installSrc.match(/(function resolveChatSetupChoice\([\s\S]*?\n\})/);
+if (!chatChoiceMatch) throw new Error("Could not extract resolveChatSetupChoice from install.js");
+const resolveChatSetupChoice = new Function(`${chatChoiceMatch[1]}; return resolveChatSetupChoice;`)();
+
 describe("makeServerEntry", () => {
   it("creates valid entry with command, args, and env", () => {
     const entry = makeServerEntry("/home/user/.telegram-mcp-bridge/server.js", "123:ABC", "456");
@@ -73,6 +82,27 @@ describe("makeServerEntry", () => {
   it("preserves forward slashes on Unix paths", () => {
     const entry = makeServerEntry("/home/user/server.js", "t", "c");
     assert.equal(entry.args[0], "/home/user/server.js");
+  });
+});
+
+describe("installer selection helpers", () => {
+  it("treats option 2 as using an existing bot token", () => {
+    assert.equal(resolveTokenSetupChoice("2"), "existing");
+  });
+
+  it("treats non-2 token choices as creating a bot", () => {
+    assert.equal(resolveTokenSetupChoice("1"), "create");
+    assert.equal(resolveTokenSetupChoice(""), "create");
+  });
+
+  it("treats option 3 as manual chat id entry", () => {
+    assert.equal(resolveChatSetupChoice("3"), "manual");
+  });
+
+  it("treats non-3 chat choices as auto detection", () => {
+    assert.equal(resolveChatSetupChoice("1"), "auto");
+    assert.equal(resolveChatSetupChoice("2"), "auto");
+    assert.equal(resolveChatSetupChoice(""), "auto");
   });
 });
 

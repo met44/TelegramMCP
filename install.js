@@ -77,6 +77,14 @@ function tgApi(token, method, body) {
   return body ? httpPost(url, body).then(JSON.parse) : httpGet(url).then(JSON.parse);
 }
 
+function resolveTokenSetupChoice(choice) {
+  return String(choice).trim() === "2" ? "existing" : "create";
+}
+
+function resolveChatSetupChoice(choice) {
+  return String(choice).trim() === "3" ? "manual" : "auto";
+}
+
 // ---------------------------------------------------------------------------
 // Open URL cross-platform
 // ---------------------------------------------------------------------------
@@ -441,9 +449,9 @@ async function main() {
   console.log(`    ${C.bold}2)${C.reset} Yes, I have a token ready`);
   console.log("");
 
-  const hasToken = (await ask("Enter choice [1-2]: ")).trim();
+  const tokenSetup = resolveTokenSetupChoice(await ask("Enter choice [1-2]: "));
 
-  if (hasToken !== "2") {
+  if (tokenSetup !== "existing") {
     console.log("");
     console.log(`  ${C.bold}Opening BotFather in Telegram...${C.reset}`);
     info("If it doesn't open, go to: https://t.me/BotFather");
@@ -517,46 +525,46 @@ async function main() {
   console.log(`  ${C.bold}Now we need a Telegram group with Topics enabled.${C.reset}`);
   console.log(`  ${C.bold}Each agent session gets its own topic — full isolation.${C.reset}`);
   console.log("");
-  console.log(`  ${C.bold}Do you already have a forum group set up?${C.reset}`);
-  console.log(`    ${C.bold}1)${C.reset} No, help me create one`);
-  console.log(`    ${C.bold}2)${C.reset} Yes, I have the group Chat ID ready`);
+  console.log(`  ${C.bold}How should we get the group Chat ID?${C.reset}`);
+  console.log(`    ${C.bold}1)${C.reset} Help me create/find a forum group and auto-detect it`);
+  console.log(`    ${C.bold}2)${C.reset} I already have a bot token, auto-detect the Chat ID`);
+  console.log(`    ${C.bold}3)${C.reset} I already know the Chat ID — I'll paste it manually`);
   console.log("");
 
-  const hasGroup = (await ask("Enter choice [1-2]: ")).trim();
+  const chatSetup = resolveChatSetupChoice(await ask("Enter choice [1-3]: "));
 
-  if (hasGroup !== "2") {
+  if (chatSetup === "auto") {
     console.log("");
-    console.log(`  ${C.cyan}${C.bold}Follow these steps in Telegram:${C.reset}`);
-    console.log("");
-    console.log(`  ${C.cyan}1.${C.reset} Open Telegram and tap ${C.bold}New Group${C.reset}`);
-    console.log(`  ${C.cyan}2.${C.reset} Add your bot ${C.bold}@${botUsername || "your_bot"}${C.reset} as a member`);
-    console.log(`  ${C.cyan}3.${C.reset} Name it something like ${C.bold}Agent Bridge${C.reset} and create it`);
-    console.log(`  ${C.cyan}4.${C.reset} Open ${C.bold}Group Settings${C.reset} (tap group name at top)`);
-    console.log(`  ${C.cyan}5.${C.reset} Tap ${C.bold}Edit${C.reset} (pencil icon) → scroll down`);
-    console.log(`  ${C.cyan}6.${C.reset} Enable ${C.bold}Topics${C.reset} (this converts it to a forum supergroup)`);
-    console.log(`  ${C.cyan}7.${C.reset} Go to ${C.bold}Administrators${C.reset} → tap your bot → enable:`);
-    console.log(`     • ${C.bold}Manage Topics${C.reset}`);
-    console.log(`     • ${C.bold}Delete Messages${C.reset} (optional but recommended)`);
-    console.log(`  ${C.cyan}8.${C.reset} Send any message in the group (e.g. ${C.bold}hello${C.reset})`);
-    console.log("");
+    if (tokenSetup !== "existing") {
+      console.log(`  ${C.cyan}${C.bold}Follow these steps in Telegram:${C.reset}`);
+      console.log("");
+      console.log(`  ${C.cyan}1.${C.reset} Open Telegram and tap ${C.bold}New Group${C.reset}`);
+      console.log(`  ${C.cyan}2.${C.reset} Add your bot ${C.bold}@${botUsername || "your_bot"}${C.reset} as a member`);
+      console.log(`  ${C.cyan}3.${C.reset} Name it something like ${C.bold}Agent Bridge${C.reset} and create it`);
+      console.log(`  ${C.cyan}4.${C.reset} Open ${C.bold}Group Settings${C.reset} (tap group name at top)`);
+      console.log(`  ${C.cyan}5.${C.reset} Tap ${C.bold}Edit${C.reset} (pencil icon) → scroll down`);
+      console.log(`  ${C.cyan}6.${C.reset} Enable ${C.bold}Topics${C.reset} (this converts it to a forum supergroup)`);
+      console.log(`  ${C.cyan}7.${C.reset} Go to ${C.bold}Administrators${C.reset} → tap your bot → enable:`);
+      console.log(`     • ${C.bold}Manage Topics${C.reset}`);
+      console.log(`     • ${C.bold}Delete Messages${C.reset} (optional but recommended)`);
+      console.log(`  ${C.cyan}8.${C.reset} Send any message in the group (e.g. ${C.bold}hello${C.reset})`);
+      console.log("");
+    } else {
+      console.log(`  ${C.cyan}${C.bold}Auto-detect steps:${C.reset}`);
+      console.log("");
+      console.log(`  ${C.cyan}1.${C.reset} Make sure your bot ${C.bold}@${botUsername || "your_bot"}${C.reset} is already in the target group`);
+      console.log(`  ${C.cyan}2.${C.reset} Enable ${C.bold}Topics${C.reset} for that group if you want per-session isolation`);
+      console.log(`  ${C.cyan}3.${C.reset} Send any new message in the group (for example ${C.bold}hello${C.reset})`);
+      console.log("");
+    }
     info("The installer will detect the group automatically...");
     console.log("");
   }
 
-  // Flush old updates and track offset
-  let detectOffset = 0;
-  try {
-    const old = await tgApi(botToken, "getUpdates", { offset: -1 });
-    if (old.ok && old.result && old.result.length) {
-      detectOffset = old.result[old.result.length - 1].update_id + 1;
-      await tgApi(botToken, "getUpdates", { offset: detectOffset });
-    }
-  } catch { /* ignore */ }
-
   let chatId = "";
   let chatTitle = "";
 
-  if (hasGroup === "2") {
+  if (chatSetup === "manual") {
     chatId = (await ask("Enter your group Chat ID (starts with -): ")).trim();
   } else {
     // Poll for new message from the group
