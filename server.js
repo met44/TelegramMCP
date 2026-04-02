@@ -609,7 +609,7 @@ async function pollTelegram() {
 
       const msgTopicId = msg.message_thread_id || null;
 
-      // Handle /pause and /resume in any topic (session-specific or General for all)
+      // Handle /pause, /resume, /continue in any topic (session-specific or General for all)
       if (msg.text === "/pause" || msg.text === "/resume") {
         const isPause = msg.text === "/pause";
         if (msgTopicId) {
@@ -626,6 +626,25 @@ async function pollTelegram() {
             count++;
           }
           await sendToGeneral(isPause ? `⏸ *All sessions paused* (${count}) — agents held until /resume` : `▶️ *All sessions resumed* (${count})`);
+        }
+        continue;
+      }
+
+      if (msg.text === "/continue") {
+        if (msgTopicId) {
+          const topicToSession = buildTopicToSessionMap();
+          const targetSid = topicToSession[String(msgTopicId)];
+          if (targetSid && sessions.has(targetSid)) {
+            sessions.get(targetSid).skipWait = true;
+            await sendToSession("⏩ *Wait skipped* — agent released immediately", msgTopicId);
+          }
+        } else {
+          let count = 0;
+          for (const [, s] of sessions) {
+            s.skipWait = true;
+            count++;
+          }
+          await sendToGeneral(`⏩ *All waits skipped* (${count})`);
         }
         continue;
       }
@@ -805,11 +824,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Step 2: Wait / pause hold — send typing indicator periodically
     // When paused, hold indefinitely (even if wait=0) until resumed or a message arrives.
-    // When not paused, normal deadline applies.
+    // When not paused, normal deadline applies. /continue skips wait immediately.
     {
+      session.skipWait = false;
       const deadline = wait > 0 ? Date.now() + wait * 1000 : 0;
       let lastTyping = 0;
       while (session.paused || (deadline && Date.now() < deadline)) {
+        if (session.skipWait) { session.skipWait = false; break; }
         if (Date.now() - lastTyping > 4000) {
           sendTypingAction(session.topicId);
           lastTyping = Date.now();

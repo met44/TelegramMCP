@@ -335,6 +335,25 @@ describe("Pause/resume session hold", () => {
     session.paused = false;
     assert.equal(session.paused, false);
   });
+
+  it("skipWait breaks out of wait loop immediately", async () => {
+    const session = { paused: false, skipWait: false };
+    const deadline = Date.now() + 5000; // 5s deadline — should NOT take this long
+    const start = Date.now();
+
+    // Simulate /continue after 2 iterations
+    let iterations = 0;
+    session.skipWait = false;
+    while (session.paused || (deadline && Date.now() < deadline)) {
+      if (session.skipWait) { session.skipWait = false; break; }
+      iterations++;
+      if (iterations === 2) session.skipWait = true; // simulate /continue
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 1000, `should exit fast, took ${elapsed}ms`);
+    assert.equal(session.skipWait, false, "skipWait should be reset after break");
+  });
 });
 
 // Replicate the builder function for testing (avoids requiring server.js)
