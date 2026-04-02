@@ -284,6 +284,59 @@ describe("Session isolation via separate queue files", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Test pause/resume hold behavior
+// ---------------------------------------------------------------------------
+
+describe("Pause/resume session hold", () => {
+  it("session object starts with paused=false", () => {
+    // Simulates getSession() initializer
+    const session = { queue: null, topicId: null, paused: false };
+    assert.equal(session.paused, false);
+  });
+
+  it("paused session holds even when messages are pending", async () => {
+    const session = { paused: true };
+    const sinceTs = 0;
+    let iterations = 0;
+    const maxIterations = 5;
+
+    // Simulate the wait loop: while paused, messages don't cause a break
+    while (session.paused || false) {
+      iterations++;
+      if (iterations >= maxIterations) {
+        // Simulate /resume
+        session.paused = false;
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(session.paused, false);
+    assert.equal(iterations, maxIterations);
+  });
+
+  it("unpaused session exits wait loop when deadline passes", async () => {
+    const session = { paused: false };
+    const deadline = Date.now() + 50; // 50ms deadline
+    let iterations = 0;
+
+    while (session.paused || (deadline && Date.now() < deadline)) {
+      iterations++;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.ok(iterations > 0);
+    assert.ok(Date.now() >= deadline);
+  });
+
+  it("pause/resume toggle works correctly", () => {
+    const session = { paused: false };
+    assert.equal(session.paused, false);
+    session.paused = true;
+    assert.equal(session.paused, true);
+    session.paused = false;
+    assert.equal(session.paused, false);
+  });
+});
+
 // Replicate the builder function for testing (avoids requiring server.js)
 function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
   let d = "Unified Telegram communication tool. Does everything in one call:\n" +

@@ -253,7 +253,7 @@ function getSession(sessionId) {
   const queueFile = path.join(DATA_DIR, `queue-${sessionId}.json`);
   const q = new MessageQueue(queueFile);
   const topicMap = loadTopicMap();
-  const s = { queue: q, topicId: topicMap[sessionId] || null };
+  const s = { queue: q, topicId: topicMap[sessionId] || null, paused: false };
   sessions.set(sessionId, s);
   return s;
 }
@@ -609,6 +609,27 @@ async function pollTelegram() {
 
       const msgTopicId = msg.message_thread_id || null;
 
+      // Handle /pause and /resume in any topic (session-specific or General for all)
+      if (msg.text === "/pause" || msg.text === "/resume") {
+        const isPause = msg.text === "/pause";
+        if (msgTopicId) {
+          const topicToSession = buildTopicToSessionMap();
+          const targetSid = topicToSession[String(msgTopicId)];
+          if (targetSid && sessions.has(targetSid)) {
+            sessions.get(targetSid).paused = isPause;
+            await sendToSession(isPause ? "⏸ *Session paused* — agent is held until you /resume" : "▶️ *Session resumed* — agent released", msgTopicId);
+          }
+        } else {
+          let count = 0;
+          for (const [, s] of sessions) {
+            s.paused = isPause;
+            count++;
+          }
+          await sendToGeneral(isPause ? `⏸ *All sessions paused* (${count}) — agents held until /resume` : `▶️ *All sessions resumed* (${count})`);
+        }
+        continue;
+      }
+
       // Handle commands in General topic
       if (!msgTopicId || msg.is_topic_message === false) {
         if (msg.text === "/start") {
@@ -790,18 +811,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       session.readMsgIds = [];
     }
 
-    // Step 2: Wait if requested — send typing indicator periodically
-    if (wait > 0) {
-      const deadline = Date.now() + wait * 1000;
+    // Step 2: Wait / pause hold — send typing indicator periodically
+    // When paused, hold indefinitely (even if wait=0) until resumed or a message arrives.
+    // When not paused, normal deadline applies.
+    {
+      const deadline = wait > 0 ? Date.now() + wait * 1000 : 0;
       let lastTyping = 0;
-      while (Date.now() < deadline) {
-        // Send typing indicator every 4 seconds (Telegram typing lasts ~5s)
+      while (session.paused || (deadline && Date.now() < deadline)) {
         if (Date.now() - lastTyping > 4000) {
           sendTypingAction(session.topicId);
           lastTyping = Date.now();
         }
         const count = sinceTs ? session.queue.pendingCountSince(sinceTs) : session.queue.pendingCount();
-        if (count > 0) break;
+        if (count > 0 && !session.paused) break;
         await new Promise((r) => setTimeout(r, 500));
       }
     }
@@ -829,7 +851,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return entry;
     });
 
-    const result = { ok: true, now, session_id: sessionId, messages: slim };
+    const result = { ok: true, now, session_id: sessionId, messages: slim, paused: session.paused };
     const content = [{ type: "text", text: JSON.stringify(result) }];
 
     // Append image content blocks for received photos
