@@ -714,14 +714,11 @@ function buildInteractDesc() {
     "• If `message` is provided: sends it to the user via Telegram (Markdown supported)\n" +
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
-    "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n" +
     "• MUST pass `session_id` on every call — this is how the server knows which session you are\n\n" +
     "Response format: {ok, now, session_id, messages: [{text, ts, image?}]}\n" +
-    "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
+    "- `now`: current server timestamp\n" +
     "- `session_id`: your session identifier (echoed back for context)\n" +
-    "- `messages`: new messages from user (empty array if none)\n\n" +
-    "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
-    "to know if a message is a fresh reply or was pending from before your question.\n\n" +
+    "- `messages`: pending messages from user (empty array if none)\n\n" +
     "SESSION ISOLATION: Pass the same `session_id` on every call within a conversation.\n" +
     "Each session_id gets its own Telegram topic and message queue.\n" +
     "Multiple agents in the same software are isolated by their session_id.";
@@ -766,10 +763,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "number",
             description: "Seconds to wait for user reply (0=instant check, 60-120 for idle polling, up to 300). Default 0.",
           },
-          since_ts: {
-            type: "number",
-            description: "Unix timestamp — only return messages newer than this. Use the `now` value from the previous response.",
-          },
         },
       },
     },
@@ -784,7 +777,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const sessionId = args?.session_id || DEFAULT_SESSION_ID;
     const message = args?.message || null;
     const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
-    const sinceTs = parseInt(args?.since_ts, 10) || 0;
     const imageArg = args?.image || null;
 
     // Ensure session has a topic and queue
@@ -822,19 +814,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           sendTypingAction(session.topicId);
           lastTyping = Date.now();
         }
-        const count = sinceTs ? session.queue.pendingCountSince(sinceTs) : session.queue.pendingCount();
+        const count = session.queue.pendingCount();
         if (count > 0 && !session.paused) break;
         await new Promise((r) => setTimeout(r, 500));
       }
     }
 
     // Step 3: Collect messages
-    let msgs;
-    if (sinceTs) {
-      msgs = session.queue.pollSince(sinceTs);
-    } else {
-      msgs = session.queue.poll();
-    }
+    const msgs = session.queue.poll();
 
     // React 👀 on messages the agent just read — track for later ✅
     if (!session.readMsgIds) session.readMsgIds = [];
@@ -851,7 +838,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return entry;
     });
 
-    const result = { ok: true, now, session_id: sessionId, messages: slim, paused: session.paused };
+    const result = { ok: true, now, session_id: sessionId, messages: slim };
     const content = [{ type: "text", text: JSON.stringify(result) }];
 
     // Append image content blocks for received photos

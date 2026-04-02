@@ -18,7 +18,6 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that l
 
 - **Single `interact` tool** — replaces 4 separate tools (send/poll/check/wait). One call does it all.
 - **Multi-machine support** — run agents on multiple machines, each with its own session. Messages are broadcast to all active sessions.
-- **Timestamp-aware polling** — agents can distinguish fresh replies from stale messages using `since_ts`.
 - **Telegram Mini App** — manage sessions, view chat history, and send messages from a web UI inside Telegram.
 - **Auto CI/CD** — GitHub Actions runs tests on 3 OSes × 3 Node versions, then deploys the webapp to GitHub Pages.
 
@@ -74,7 +73,7 @@ Each agent session gets its own **Telegram Forum Topic**:
 One tool replaces the old send/poll/check/wait pattern:
 
 ```
-interact({ session_id, message?, wait?, since_ts? })
+interact({ session_id, message?, wait? })
 → { ok, now, session_id, messages: [{text, ts}] }
 ```
 
@@ -83,20 +82,17 @@ interact({ session_id, message?, wait?, since_ts? })
 | `session_id` | **Required.** Your unique session identifier. Pass the same ID on every call within a conversation. |
 | `message` | *(optional)* Text to send to user via Telegram (Markdown) |
 | `wait` | *(optional)* Seconds to block waiting for a reply (0–300) |
-| `since_ts` | *(optional)* Only return messages newer than this timestamp |
 
 | Response field | Description |
 |----------------|-------------|
-| `now` | Server timestamp — pass as `since_ts` on next call |
+| `now` | Server timestamp |
 | `session_id` | Echoed back — your session identifier |
-| `messages` | Array of new messages `[{text, ts}]` |
-| `pending` | Remaining unread messages after this call |
-| `sent` | Whether the message was sent (only if `message` was provided) |
+| `messages` | Array of pending messages `[{text, ts}]` (cleared after each call) |
 
 ### Why One Tool?
 
 - **No forgotten polls** — every call checks for messages, even when sending
-- **No stale messages** — `since_ts` lets agents ignore messages from before their question
+- **No stale messages** — messages are cleared on each poll, no accumulation
 - **Minimal context** — empty check costs ~15 tokens; no separate check→poll dance
 - **Blocking waits** — `wait=120` holds the call server-side, no rapid polling loops
 
@@ -108,11 +104,11 @@ interact({ session_id, message?, wait?, since_ts? })
 
 2. ... agent works for a while ...
 
-3. interact({since_ts: 1700000000})                    // routine check
-   → {ok:true, messages:[], pending:0, now:1700000060}
+3. interact({session_id: "abc"})                       // routine check
+   → {ok:true, messages:[], now:1700000060, session_id:"abc"}
 
-4. interact({message: "Done! Summary: ...", wait: 120, since_ts: 1700000060})
-   → {ok:true, sent:true, messages:[{text:"looks good!", ts:1700000100}], pending:0, now:1700000120}
+4. interact({session_id: "abc", message: "Done! Summary: ...", wait: 120})
+   → {ok:true, messages:[{text:"looks good!", ts:1700000100}], now:1700000120, session_id:"abc"}
 ```
 
 ## Multi-Machine Support

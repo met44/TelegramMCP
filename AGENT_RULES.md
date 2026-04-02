@@ -8,10 +8,8 @@ Single unified tool for all communication:
 - `interact({session_id: "my-id", message: "text"})` — Send a message
 - `interact({session_id: "my-id"})` — Check for new messages
 - `interact({session_id: "my-id", wait: 270})` — Wait up to 270s for a reply
-- `interact({session_id: "my-id", message: "text", wait: 60, since_ts: N})` — Send + wait + filter stale
-
 Response: `{ok, now, session_id, messages: [{text, ts}]}`
-Pass `now` as `since_ts` on next call to only get newer messages.
+All pending messages are returned and cleared on each call.
 
 ## Session ID
 You MUST pass `session_id` on every call. Generate a unique ID at the start of your session and reuse it.
@@ -26,5 +24,4 @@ Multiple agents in the same software are isolated by their session_id.
 
 ## Tips
 - Keep messages concise (phone-readable).
-- Use `since_ts` to avoid reading stale messages from before your question.
 - Batch updates — don't spam multiple messages.

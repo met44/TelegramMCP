@@ -203,9 +203,9 @@ describe("buildInteractDesc", () => {
     assert.ok(!d.includes("periodically"));
   });
 
-  it("always includes since_ts documentation", () => {
+  it("always includes session_id and now documentation", () => {
     const d = buildInteractDescWith(false, false, false, false);
-    assert.ok(d.includes("since_ts"));
+    assert.ok(d.includes("session_id"));
     assert.ok(d.includes("now"));
   });
 
@@ -343,14 +343,11 @@ function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
     "• If `message` is provided: sends it to the user via Telegram (Markdown supported)\n" +
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
-    "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n" +
     "• MUST pass `session_id` on every call — this is how the server knows which session you are\n\n" +
     "Response format: {ok, now, session_id, messages: [{text, ts, image?}]}\n" +
-    "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
+    "- `now`: current server timestamp\n" +
     "- `session_id`: your session identifier (echoed back for context)\n" +
-    "- `messages`: new messages from user (empty array if none)\n\n" +
-    "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
-    "to know if a message is a fresh reply or was pending from before your question.\n\n" +
+    "- `messages`: pending messages from user (empty array if none)\n\n" +
     "SESSION ISOLATION: Pass the same `session_id` on every call within a conversation.\n" +
     "Each session_id gets its own Telegram topic and message queue.\n" +
     "Multiple agents in the same software are isolated by their session_id.";
