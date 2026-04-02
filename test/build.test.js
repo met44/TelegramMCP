@@ -49,4 +49,27 @@ describe("build.js", () => {
     const decoded = Buffer.from(match[1], "base64").toString("utf-8");
     assert.equal(decoded, serverSrc, "embedded base64 should exactly match server.js");
   });
+
+  it("embeds AGENT_RULES.md as base64 (placeholder replaced)", () => {
+    const content = fs.readFileSync(BUILT_FILE, "utf-8");
+    assert.ok(!content.includes("%%RULES_B64%%"), "rules placeholder should be replaced");
+  });
+
+  it("embedded AGENT_RULES.md matches source file", () => {
+    const rulesSrc = fs.readFileSync(path.join(ROOT, "AGENT_RULES.md"), "utf-8");
+    const content = fs.readFileSync(BUILT_FILE, "utf-8");
+    const match = content.match(/const RULES_B64 = "([A-Za-z0-9+/=]+)"/);
+    assert.ok(match, "should contain a RULES_B64 base64 string");
+    const decoded = Buffer.from(match[1], "base64").toString("utf-8");
+    assert.equal(decoded, rulesSrc, "embedded rules should exactly match AGENT_RULES.md");
+  });
+
+  it("embedded AGENT_RULES.md contains expected content", () => {
+    const content = fs.readFileSync(BUILT_FILE, "utf-8");
+    const match = content.match(/const RULES_B64 = "([A-Za-z0-9+/=]+)"/);
+    const decoded = Buffer.from(match[1], "base64").toString("utf-8");
+    assert.ok(decoded.includes("# Telegram Bridge"), "should contain main heading");
+    assert.ok(decoded.includes("session_id"), "should document session_id");
+    assert.ok(decoded.includes("interact"), "should document interact tool");
+  });
 });

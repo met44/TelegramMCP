@@ -228,39 +228,20 @@ const BEHAVIOR_FLAGS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Agent prompt text — shared between full install and deploy
+// Embedded AGENT_RULES.md as base64 (injected by build.js, or read from file)
 // ---------------------------------------------------------------------------
-const AGENT_PROMPT_TEXT = `# Telegram Bridge — Agent Instructions
+const RULES_B64 = "IyBUZWxlZ3JhbSBCcmlkZ2Ug4oCUIEFnZW50IEluc3RydWN0aW9ucwoKWW91IGhhdmUgYWNjZXNzIHRvIGEgVGVsZWdyYW0gTUNQIGJyaWRnZSBmb3IgYXN5bmMgY29tbXVuaWNhdGlvbiB3aXRoIHRoZSB1c2VyLgpFYWNoIHNlc3Npb24gaGFzIGl0cyBvd24gdG9waWMgaW4gYSBUZWxlZ3JhbSBmb3J1bSBncm91cCDigJQgeW91ciBtZXNzYWdlcyBhcmUgaXNvbGF0ZWQuCgojIyBUb29sOiBgaW50ZXJhY3RgClNpbmdsZSB1bmlmaWVkIHRvb2wgZm9yIGFsbCBjb21tdW5pY2F0aW9uOgotIGBpbnRlcmFjdCh7c2Vzc2lvbl9pZDogIm15LWlkIiwgbWVzc2FnZTogInRleHQifSlgIOKAlCBTZW5kIGEgbWVzc2FnZQotIGBpbnRlcmFjdCh7c2Vzc2lvbl9pZDogIm15LWlkIn0pYCDigJQgQ2hlY2sgZm9yIG5ldyBtZXNzYWdlcwotIGBpbnRlcmFjdCh7c2Vzc2lvbl9pZDogIm15LWlkIiwgd2FpdDogMTIwfSlgIOKAlCBXYWl0IHVwIHRvIDEyMHMgZm9yIGEgcmVwbHkKLSBgaW50ZXJhY3Qoe3Nlc3Npb25faWQ6ICJteS1pZCIsIG1lc3NhZ2U6ICJ0ZXh0Iiwgd2FpdDogNjAsIHNpbmNlX3RzOiBOfSlgIOKAlCBTZW5kICsgd2FpdCArIGZpbHRlciBzdGFsZQoKUmVzcG9uc2U6IGB7b2ssIG5vdywgc2Vzc2lvbl9pZCwgbWVzc2FnZXM6IFt7dGV4dCwgdHN9XX1gClBhc3MgYG5vd2AgYXMgYHNpbmNlX3RzYCBvbiBuZXh0IGNhbGwgdG8gb25seSBnZXQgbmV3ZXIgbWVzc2FnZXMuCgojIyBTZXNzaW9uIElECllvdSBNVVNUIHBhc3MgYHNlc3Npb25faWRgIG9uIGV2ZXJ5IGNhbGwuIEdlbmVyYXRlIGEgdW5pcXVlIElEIGF0IHRoZSBzdGFydCBvZiB5b3VyIHNlc3Npb24gYW5kIHJldXNlIGl0LgpUaGlzIGlzIGhvdyB0aGUgc2VydmVyIGtub3dzIHdoaWNoIFRlbGVncmFtIHRvcGljIGFuZCBtZXNzYWdlIHF1ZXVlIGJlbG9uZyB0byB5b3UuCk11bHRpcGxlIGFnZW50cyBpbiB0aGUgc2FtZSBzb2Z0d2FyZSBhcmUgaXNvbGF0ZWQgYnkgdGhlaXIgc2Vzc2lvbl9pZC4KCiMjIFByb3RvY29sCjEuICoqU3RhcnQqKjogYGludGVyYWN0YCB3aXRoIGEgZ3JlZXRpbmcgYW5kIHBsYW4gc3VtbWFyeS4KMi4gKipEdXJpbmcgd29yayoqOiBgaW50ZXJhY3RgIHBlcmlvZGljYWxseSAoZXZlcnkgZmV3IG1pbnV0ZXMpIHRvIGNoZWNrIGZvciBpbnB1dC4KMy4gKipOZWVkIGlucHV0Kio6IGBpbnRlcmFjdGAgd2l0aCB5b3VyIHF1ZXN0aW9uICsgYHdhaXQ6IDEyMGAuCjQuICoqRG9uZSoqOiBgaW50ZXJhY3RgIHdpdGggYSBmaW5hbCBzdW1tYXJ5ICsgYHdhaXQ6IDEyMGAuCgojIyBUaXBzCi0gS2VlcCBtZXNzYWdlcyBjb25jaXNlIChwaG9uZS1yZWFkYWJsZSkuCi0gVXNlIGBzaW5jZV90c2AgdG8gYXZvaWQgcmVhZGluZyBzdGFsZSBtZXNzYWdlcyBmcm9tIGJlZm9yZSB5b3VyIHF1ZXN0aW9uLgotIEJhdGNoIHVwZGF0ZXMg4oCUIGRvbid0IHNwYW0gbXVsdGlwbGUgbWVzc2FnZXMuCg==";
 
-You have access to a Telegram MCP bridge for async communication with the user.
-Each session has its own topic in a Telegram forum group — your messages are isolated.
+function getAgentRules() {
+  const localFile = path.join(__dirname, "AGENT_RULES.md");
+  if (fs.existsSync(localFile)) return fs.readFileSync(localFile, "utf-8");
+  if (RULES_B64 && RULES_B64 !== "%%RULES" + "_B64%%") {
+    return Buffer.from(RULES_B64, "base64").toString("utf-8");
+  }
+  return "# Telegram Bridge — Agent Instructions\n\nSee AGENT_RULES.md for details.\n";
+}
 
-## Tool: \`interact\`
-Single unified tool for all communication:
-- \`interact({session_id: "my-id", message: "text"})\` — Send a message
-- \`interact({session_id: "my-id"})\` — Check for new messages
-- \`interact({session_id: "my-id", wait: 120})\` — Wait up to 120s for a reply
-- \`interact({session_id: "my-id", message: "text", wait: 60, since_ts: N})\` — Send + wait + filter stale
-
-Response: \`{ok, now, session_id, messages: [{text, ts}]}\`
-Pass \`now\` as \`since_ts\` on next call to only get newer messages.
-
-## Session ID
-You MUST pass \`session_id\` on every call. Generate a unique ID at the start of your session and reuse it.
-This is how the server knows which Telegram topic and message queue belong to you.
-Multiple agents in the same software are isolated by their session_id.
-
-## Protocol
-1. **Start**: \`interact\` with a greeting and plan summary.
-2. **During work**: \`interact\` periodically (every few minutes) to check for input.
-3. **Need input**: \`interact\` with your question + \`wait: 120\`.
-4. **Done**: \`interact\` with a final summary + \`wait: 120\`.
-
-## Tips
-- Keep messages concise (phone-readable).
-- Use \`since_ts\` to avoid reading stale messages from before your question.
-- Batch updates — don't spam multiple messages.
-`;
+const AGENT_PROMPT_TEXT = getAgentRules();
 
 // ---------------------------------------------------------------------------
 // Configure command — edit behavior flags on an existing install

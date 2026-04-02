@@ -8,8 +8,11 @@ const serverCode = fs.readFileSync(path.join(__dirname, "server.js"), "utf-8");
 const b64 = Buffer.from(serverCode).toString("base64");
 const sha256 = crypto.createHash("sha256").update(serverCode).digest("hex");
 
+const agentRules = fs.readFileSync(path.join(__dirname, "AGENT_RULES.md"), "utf-8");
+const rulesB64 = Buffer.from(agentRules).toString("base64");
+
 const installer = fs.readFileSync(path.join(__dirname, "install.js"), "utf-8");
-const output = installer.replace("%%SERVER_B64%%", b64);
+const output = installer.replace("%%SERVER_B64%%", b64).replace("%%RULES_B64%%", rulesB64);
 
 const outPath = path.join(__dirname, "dist", "telegram-mcp-install.js");
 fs.mkdirSync(path.join(__dirname, "dist"), { recursive: true });
