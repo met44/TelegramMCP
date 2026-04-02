@@ -228,6 +228,41 @@ const BEHAVIOR_FLAGS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Agent prompt text — shared between full install and deploy
+// ---------------------------------------------------------------------------
+const AGENT_PROMPT_TEXT = `# Telegram Bridge — Agent Instructions
+
+You have access to a Telegram MCP bridge for async communication with the user.
+Each session has its own topic in a Telegram forum group — your messages are isolated.
+
+## Tool: \`interact\`
+Single unified tool for all communication:
+- \`interact({session_id: "my-id", message: "text"})\` — Send a message
+- \`interact({session_id: "my-id"})\` — Check for new messages
+- \`interact({session_id: "my-id", wait: 120})\` — Wait up to 120s for a reply
+- \`interact({session_id: "my-id", message: "text", wait: 60, since_ts: N})\` — Send + wait + filter stale
+
+Response: \`{ok, now, session_id, messages: [{text, ts}]}\`
+Pass \`now\` as \`since_ts\` on next call to only get newer messages.
+
+## Session ID
+You MUST pass \`session_id\` on every call. Generate a unique ID at the start of your session and reuse it.
+This is how the server knows which Telegram topic and message queue belong to you.
+Multiple agents in the same software are isolated by their session_id.
+
+## Protocol
+1. **Start**: \`interact\` with a greeting and plan summary.
+2. **During work**: \`interact\` periodically (every few minutes) to check for input.
+3. **Need input**: \`interact\` with your question + \`wait: 120\`.
+4. **Done**: \`interact\` with a final summary + \`wait: 120\`.
+
+## Tips
+- Keep messages concise (phone-readable).
+- Use \`since_ts\` to avoid reading stale messages from before your question.
+- Batch updates — don't spam multiple messages.
+`;
+
+// ---------------------------------------------------------------------------
 // Configure command — edit behavior flags on an existing install
 // ---------------------------------------------------------------------------
 async function runConfigure() {
@@ -441,15 +476,8 @@ async function runDeploy() {
 
   // Step 3: Update agent prompt
   step(3, 3, "Updating agent prompt");
-  const agentPrompt = fs.existsSync(path.join(__dirname, "AGENT_PROMPT.md"))
-    ? fs.readFileSync(path.join(__dirname, "AGENT_PROMPT.md"), "utf-8")
-    : null;
-  if (agentPrompt) {
-    fs.writeFileSync(path.join(INSTALL_DIR, "AGENT_PROMPT.md"), agentPrompt);
-    ok("Agent prompt updated");
-  } else {
-    info("No AGENT_PROMPT.md found, skipping");
-  }
+  fs.writeFileSync(path.join(INSTALL_DIR, "AGENT_PROMPT.md"), AGENT_PROMPT_TEXT);
+  ok("Agent prompt updated");
 
   // Done
   console.log("");
@@ -859,32 +887,7 @@ async function main() {
   // ── Step 5: Write agent prompt ────────────────────────────────────────
   step(5, TOTAL, "Writing agent instructions");
 
-  const agentPrompt = `# Telegram Bridge — Agent Instructions
-
-You have access to a Telegram MCP bridge for async communication with the user.
-Each session has its own topic in a Telegram forum group — your messages are isolated.
-
-## Tool: \`interact\`
-Single unified tool for all communication:
-- \`interact({message: "text"})\` — Send a message
-- \`interact({})\` — Check for new messages
-- \`interact({wait: 120})\` — Wait up to 120s for a reply
-- \`interact({message: "text", wait: 60, since_ts: N})\` — Send + wait + filter stale
-
-Response: \`{ok, sent?, messages: [{text, ts}], pending, now}\`
-Pass \`now\` as \`since_ts\` on next call to only get newer messages.
-
-## Protocol
-1. **Start**: \`interact\` with a greeting and plan summary.
-2. **During work**: \`interact\` periodically (every few minutes) to check for input.
-3. **Need input**: \`interact\` with your question + \`wait: 120\`.
-4. **Done**: \`interact\` with a final summary + \`wait: 120\`.
-
-## Tips
-- Keep messages concise (phone-readable).
-- Use \`since_ts\` to avoid reading stale messages from before your question.
-- Batch updates — don't spam multiple messages.
-`;
+  const agentPrompt = AGENT_PROMPT_TEXT;
   fs.writeFileSync(path.join(INSTALL_DIR, "AGENT_PROMPT.md"), agentPrompt);
   ok(`Agent prompt saved to ${path.join(INSTALL_DIR, "AGENT_PROMPT.md")}`);
 

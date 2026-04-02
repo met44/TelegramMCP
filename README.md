@@ -74,12 +74,13 @@ Each agent session gets its own **Telegram Forum Topic**:
 One tool replaces the old send/poll/check/wait pattern:
 
 ```
-interact({ message?, wait?, since_ts? })
+interact({ session_id, message?, wait?, since_ts? })
 → { ok, now, session_id, messages: [{text, ts}] }
 ```
 
 | Parameter | Description |
 |-----------|-------------|
+| `session_id` | **Required.** Your unique session identifier. Pass the same ID on every call within a conversation. |
 | `message` | *(optional)* Text to send to user via Telegram (Markdown) |
 | `wait` | *(optional)* Seconds to block waiting for a reply (0–300) |
 | `since_ts` | *(optional)* Only return messages newer than this timestamp |
@@ -87,7 +88,7 @@ interact({ message?, wait?, since_ts? })
 | Response field | Description |
 |----------------|-------------|
 | `now` | Server timestamp — pass as `since_ts` on next call |
-| `session_id` | Your unique session identifier (stable across calls) |
+| `session_id` | Echoed back — your session identifier |
 | `messages` | Array of new messages `[{text, ts}]` |
 | `pending` | Remaining unread messages after this call |
 | `sent` | Whether the message was sent (only if `message` was provided) |

@@ -28,8 +28,8 @@ const DATA_DIR = process.env.TELEGRAM_MCP_DATA_DIR ||
 const MAX_HISTORY = parseInt(process.env.TELEGRAM_MCP_MAX_HISTORY || "200", 10);
 const POLL_INTERVAL_MS = parseInt(process.env.TELEGRAM_POLL_INTERVAL || "2000", 10);
 
-// Session identity — each MCP server instance is one session
-const SESSION_ID = process.env.TELEGRAM_SESSION_ID ||
+// Session identity — fallback when agent doesn't pass session_id
+const DEFAULT_SESSION_ID = process.env.TELEGRAM_SESSION_ID ||
   `s-${crypto.randomUUID()?.slice(0, 8) || crypto.randomBytes(4).toString("hex")}`;
 const MACHINE_LABEL = process.env.TELEGRAM_MACHINE_LABEL ||
   os.hostname().slice(0, 20);
@@ -42,7 +42,6 @@ function deriveAgentLabel() {
   return "cascade";
 }
 const AGENT_LABEL = process.env.TELEGRAM_AGENT_LABEL || deriveAgentLabel();
-const SESSION_LABEL = `${MACHINE_LABEL}/${AGENT_LABEL}`;
 
 // Behavior flags (set in MCP config env block)
 const AUTO_SEND_START = process.env.TELEGRAM_AUTO_START !== "false";
@@ -140,11 +139,8 @@ function tgApiMultipart(method, fields, fileField, filePath, fileName) {
 }
 
 // ---------------------------------------------------------------------------
-// Topic management — each session gets its own forum topic
+// Topic management — persisted map of sessionId → topicId
 // ---------------------------------------------------------------------------
-let topicId = null; // message_thread_id for this session's topic
-
-// Persisted topic map: { sessionId: topicId }
 function getTopicMapFile() { return path.join(DATA_DIR, "_topics.json"); }
 
 function loadTopicMap() {
@@ -165,23 +161,22 @@ function saveTopicMap(map) {
   }
 }
 
-async function ensureTopic() {
+async function ensureTopicForSession(sessionId) {
   if (!BOT_TOKEN || !CHAT_ID) return null;
 
-  // Check if we already have a topic for this session
   const map = loadTopicMap();
-  if (map[SESSION_ID]) {
-    topicId = map[SESSION_ID];
-    log.info(`Reusing topic ${topicId} for ${SESSION_ID} (${SESSION_LABEL})`);
-    return topicId;
+  if (map[sessionId]) {
+    log.info(`Reusing topic ${map[sessionId]} for ${sessionId}`);
+    return map[sessionId];
   }
 
   // Create a new topic
+  const label = `${MACHINE_LABEL}/${sessionId.slice(0, 12)}`;
   try {
     let chatIdNum = parseInt(CHAT_ID, 10);
     let res = await tgApi("createForumTopic", {
       chat_id: chatIdNum,
-      name: `🤖 ${SESSION_LABEL}`,
+      name: `🤖 ${label}`,
     });
 
     // Handle chat migration (group upgraded to supergroup)
@@ -192,23 +187,22 @@ async function ensureTopic() {
       chatIdNum = parseInt(CHAT_ID, 10);
       res = await tgApi("createForumTopic", {
         chat_id: chatIdNum,
-        name: `🤖 ${SESSION_LABEL}`,
+        name: `🤖 ${label}`,
       });
     }
 
     if (res.ok && res.result) {
-      topicId = res.result.message_thread_id;
-      map[SESSION_ID] = topicId;
+      const tid = res.result.message_thread_id;
+      map[sessionId] = tid;
       saveTopicMap(map);
-      log.info(`Created topic ${topicId} for ${SESSION_ID} (${SESSION_LABEL})`);
-      return topicId;
+      log.info(`Created topic ${tid} for ${sessionId}`);
+      return tid;
     }
     log.warn("createForumTopic failed:", JSON.stringify(res));
   } catch (e) {
     log.warn("createForumTopic error:", e.message);
   }
 
-  // Fallback: no topic (send to General)
   return null;
 }
 
@@ -223,16 +217,40 @@ function buildTopicToSessionMap() {
 }
 
 // ---------------------------------------------------------------------------
-// Send message to this session's topic (or General as fallback)
+// Session manager — multiplexes multiple agent sessions in one process
 // ---------------------------------------------------------------------------
-async function sendToTopic(text) {
+const sessions = new Map(); // sessionId → { queue, topicId }
+
+function getSession(sessionId) {
+  if (sessions.has(sessionId)) return sessions.get(sessionId);
+  const queueFile = path.join(DATA_DIR, `queue-${sessionId}.json`);
+  const q = new MessageQueue(queueFile);
+  const topicMap = loadTopicMap();
+  const s = { queue: q, topicId: topicMap[sessionId] || null };
+  sessions.set(sessionId, s);
+  return s;
+}
+
+async function ensureSessionReady(sessionId) {
+  const s = getSession(sessionId);
+  if (!s.topicId) {
+    s.topicId = await ensureTopicForSession(sessionId);
+  }
+  registry.register(sessionId, MACHINE_LABEL, AGENT_LABEL, s.topicId);
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Send message to a session's topic (or General as fallback)
+// ---------------------------------------------------------------------------
+async function sendToSession(text, sessionTopicId) {
   if (!BOT_TOKEN || !CHAT_ID) return false;
   const body = {
     chat_id: parseInt(CHAT_ID, 10),
     text,
     parse_mode: "Markdown",
   };
-  if (topicId) body.message_thread_id = topicId;
+  if (sessionTopicId) body.message_thread_id = sessionTopicId;
   try {
     const res = await tgApi("sendMessage", body);
     if (res.ok) return true;
@@ -246,26 +264,25 @@ async function sendToTopic(text) {
   }
 }
 
-// Send photo to this session's topic (or General as fallback)
+// Send photo to a session's topic (or General as fallback)
 // ---------------------------------------------------------------------------
-async function sendPhotoToTopic(imageSource, caption) {
+async function sendPhotoToSession(imageSource, caption, sessionTopicId) {
   if (!BOT_TOKEN || !CHAT_ID) return false;
   const chatIdNum = parseInt(CHAT_ID, 10);
   try {
     if (imageSource.startsWith("http://") || imageSource.startsWith("https://")) {
       const body = { chat_id: chatIdNum, photo: imageSource };
       if (caption) { body.caption = caption; body.parse_mode = "Markdown"; }
-      if (topicId) body.message_thread_id = topicId;
+      if (sessionTopicId) body.message_thread_id = sessionTopicId;
       const res = await tgApi("sendPhoto", body);
       if (res.ok) return true;
-      // Retry without parse_mode
       if (caption) { delete body.parse_mode; return !!(await tgApi("sendPhoto", body)).ok; }
       return false;
     }
     if (fs.existsSync(imageSource)) {
       const fields = { chat_id: String(chatIdNum) };
       if (caption) fields.caption = caption;
-      if (topicId) fields.message_thread_id = String(topicId);
+      if (sessionTopicId) fields.message_thread_id = String(sessionTopicId);
       const res = await tgApiMultipart("sendPhoto", fields, "photo", imageSource, path.basename(imageSource));
       return !!res.ok;
     }
@@ -480,57 +497,43 @@ class SessionRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Initialize queue and registry
+// Initialize registry
 // ---------------------------------------------------------------------------
 fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const queueFile = LEGACY_QUEUE_FILE ||
-  path.join(DATA_DIR, `queue-${SESSION_ID}.json`);
-const queue = new MessageQueue(queueFile);
 const registry = new SessionRegistry(DATA_DIR);
 
-// Register this session (topicId set later after ensureTopic)
-registry.register(SESSION_ID, MACHINE_LABEL, AGENT_LABEL, null);
-
 // ---------------------------------------------------------------------------
-// Route incoming messages by topic and session_id
+// Route incoming messages by topic → session
 // ---------------------------------------------------------------------------
 function routeMessageToSession(text, sender, msgTopicId, image = null) {
-  // Message is in a specific topic — route by topic-to-session mapping
   if (msgTopicId) {
     const topicToSession = buildTopicToSessionMap();
     const targetSessionId = topicToSession[String(msgTopicId)];
-
-    if (targetSessionId === SESSION_ID) {
-      queue.enqueue(text, sender, image);
+    if (targetSessionId) {
+      const s = getSession(targetSessionId);
+      s.queue.enqueue(text, sender, image);
       return true;
     }
-    // Not our topic — another session's poller will handle it
     return false;
   }
 
-  // Message in General topic (no topic id) — broadcast to all active sessions
+  // Message in General topic — broadcast to all known sessions
   broadcastToAllSessions(text, sender, image);
   return true;
 }
 
 function broadcastToAllSessions(text, sender, image = null) {
+  // Broadcast to all sessions in the in-memory map
+  for (const [, s] of sessions) {
+    s.queue.enqueue(text, sender, image);
+  }
+  // Also broadcast to active registry sessions not yet in memory
   const activeIds = registry.getActiveSessionIds();
   for (const sid of activeIds) {
-    if (sid === SESSION_ID) {
-      queue.enqueue(text, sender, image);
-    } else {
-      const otherFile = path.join(DATA_DIR, `queue-${sid}.json`);
-      try {
-        const otherQueue = new MessageQueue(otherFile);
-        otherQueue.enqueue(text, sender, image);
-      } catch (e) {
-        log.warn(`Failed to broadcast to session ${sid}:`, e.message);
-      }
+    if (!sessions.has(sid)) {
+      const s = getSession(sid);
+      s.queue.enqueue(text, sender, image);
     }
-  }
-  if (!activeIds.includes(SESSION_ID)) {
-    queue.enqueue(text, sender, image);
   }
 }
 
@@ -636,22 +639,14 @@ async function startPollingLoop() {
   pollingActive = true;
   await flushOldUpdates();
 
-  // Ensure this session has a topic
-  await ensureTopic();
-  if (topicId) {
-    registry.updateTopicId(SESSION_ID, topicId);
-  }
-
-  log.info(`Telegram polling started (session=${SESSION_ID}, label=${SESSION_LABEL}, topic=${topicId})`);
-
-  // Send startup message to our topic
-  if (AUTO_SEND_START && topicId) {
-    await sendToTopic(`🟢 *Session started*\n_${SESSION_LABEL}_`);
-  }
+  log.info(`Telegram polling started (default_session=${DEFAULT_SESSION_ID})`);
 
   while (pollingActive) {
     await pollTelegram();
-    registry.heartbeat(SESSION_ID);
+    // Heartbeat all active sessions
+    for (const [sid] of sessions) {
+      registry.heartbeat(sid);
+    }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 }
@@ -670,15 +665,17 @@ function buildInteractDesc() {
     "• If `message` is provided: sends it to the user via Telegram (Markdown supported)\n" +
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
-    "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
+    "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n" +
+    "• MUST pass `session_id` on every call — this is how the server knows which session you are\n\n" +
     "Response format: {ok, now, session_id, messages: [{text, ts, image?}]}\n" +
     "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
-    "- `session_id`: your unique session identifier (included in every response for context)\n" +
+    "- `session_id`: your session identifier (echoed back for context)\n" +
     "- `messages`: new messages from user (empty array if none)\n\n" +
     "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
     "to know if a message is a fresh reply or was pending from before your question.\n\n" +
-    "SESSION ISOLATION: Each agent session has a unique session_id and its own Telegram topic.\n" +
-    "Messages are filtered to your session only, even when multiple agents run in the same software.";
+    "SESSION ISOLATION: Pass the same `session_id` on every call within a conversation.\n" +
+    "Each session_id gets its own Telegram topic and message queue.\n" +
+    "Multiple agents in the same software are isolated by their session_id.";
 
   const rules = [];
   if (AUTO_SEND_START) rules.push(
@@ -704,6 +701,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
+          session_id: {
+            type: "string",
+            description: "Your unique session identifier. MUST be passed on every call. Use a stable ID for your conversation (e.g. generate one at start and reuse it).",
+          },
           message: {
             type: "string",
             description: "Message to send to user via Telegram (Markdown). Omit to just check for messages.",
@@ -731,22 +732,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "interact") {
     const now = Math.floor(Date.now() / 1000);
+    const sessionId = args?.session_id || DEFAULT_SESSION_ID;
     const message = args?.message || null;
     const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
     const sinceTs = parseInt(args?.since_ts, 10) || 0;
-
     const imageArg = args?.image || null;
 
-    // Step 1: Send message/image if provided — goes to this session's topic
+    // Ensure session has a topic and queue
+    const session = await ensureSessionReady(sessionId);
+
+    // Step 1: Send message/image if provided
     if (imageArg) {
-      const ok = await sendPhotoToTopic(imageArg, message || "");
+      const ok = await sendPhotoToSession(imageArg, message || "", session.topicId);
       if (!ok) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "image send failed", now, session_id: SESSION_ID }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "image send failed", now, session_id: sessionId }) }] };
       }
     } else if (message) {
-      const ok = await sendToTopic(message);
+      const ok = await sendToSession(message, session.topicId);
       if (!ok) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "send failed", now, session_id: SESSION_ID }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "send failed", now, session_id: sessionId }) }] };
       }
     }
 
@@ -754,7 +758,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (wait > 0) {
       const deadline = Date.now() + wait * 1000;
       while (Date.now() < deadline) {
-        const count = sinceTs ? queue.pendingCountSince(sinceTs) : queue.pendingCount();
+        const count = sinceTs ? session.queue.pendingCountSince(sinceTs) : session.queue.pendingCount();
         if (count > 0) break;
         await new Promise((r) => setTimeout(r, 500));
       }
@@ -763,9 +767,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Step 3: Collect messages
     let msgs;
     if (sinceTs) {
-      msgs = queue.pollSince(sinceTs);
+      msgs = session.queue.pollSince(sinceTs);
     } else {
-      msgs = queue.poll();
+      msgs = session.queue.poll();
     }
 
     const slim = msgs.map((m) => {
@@ -774,7 +778,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return entry;
     });
 
-    const result = { ok: true, now, session_id: SESSION_ID, messages: slim };
+    const result = { ok: true, now, session_id: sessionId, messages: slim };
     const content = [{ type: "text", text: JSON.stringify(result) }];
 
     // Append image content blocks for received photos
@@ -787,39 +791,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content };
   }
 
-  // Legacy tool support
+  // Legacy tool support — uses default session
   if (name === "send_message") {
     const text = args?.text;
     if (!text) return { content: [{ type: "text", text: '{"error":"empty message"}' }] };
-    const ok = await sendToTopic(text);
+    const s = await ensureSessionReady(DEFAULT_SESSION_ID);
+    const ok = await sendToSession(text, s.topicId);
     return { content: [{ type: "text", text: JSON.stringify({ sent: ok, now: Math.floor(Date.now() / 1000) }) }] };
   }
 
   if (name === "poll_messages") {
-    const msgs = queue.poll();
+    const s = getSession(DEFAULT_SESSION_ID);
+    const msgs = s.queue.poll();
     const slim = msgs.map((m) => ({ text: m.text, ts: m.ts }));
     return { content: [{ type: "text", text: JSON.stringify({ messages: slim, now: Math.floor(Date.now() / 1000) }) }] };
   }
 
   if (name === "check_status") {
+    const s = getSession(DEFAULT_SESSION_ID);
     const wait = Math.min(Math.max(parseInt(args?.wait, 10) || 0, 0), 300);
     if (wait > 0) {
       const deadline = Date.now() + wait * 1000;
-      while (Date.now() < deadline && queue.pendingCount() === 0) {
+      while (Date.now() < deadline && s.queue.pendingCount() === 0) {
         await new Promise((r) => setTimeout(r, 500));
       }
     }
     return {
-      content: [{ type: "text", text: JSON.stringify({ pending: queue.pendingCount(), now: Math.floor(Date.now() / 1000) }) }],
+      content: [{ type: "text", text: JSON.stringify({ pending: s.queue.pendingCount(), now: Math.floor(Date.now() / 1000) }) }],
     };
   }
 
   if (name === "wait_for_reply") {
+    const s = getSession(DEFAULT_SESSION_ID);
     const timeout = Math.min(Math.max(parseInt(args?.timeout, 10) || 120, 1), 300);
     const deadline = Date.now() + timeout * 1000;
     while (Date.now() < deadline) {
-      if (queue.pendingCount() > 0) {
-        const msgs = queue.poll();
+      if (s.queue.pendingCount() > 0) {
+        const msgs = s.queue.poll();
         const slim = msgs.map((m) => ({ text: m.text, ts: m.ts }));
         return { content: [{ type: "text", text: JSON.stringify({ messages: slim, now: Math.floor(Date.now() / 1000) }) }] };
       }
@@ -839,8 +847,10 @@ function shutdown() {
   if (shutdownDone) return;
   shutdownDone = true;
   pollingActive = false;
-  registry.deactivate(SESSION_ID);
-  log.info(`Session ${SESSION_ID} deactivated`);
+  for (const [sid] of sessions) {
+    registry.deactivate(sid);
+  }
+  log.info(`All sessions deactivated (${sessions.size} total)`);
 }
 process.on("SIGINT", () => { shutdown(); process.exit(0); });
 process.on("SIGTERM", () => { shutdown(); process.exit(0); });
@@ -850,7 +860,7 @@ process.on("exit", shutdown);
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  log.info(`Starting Telegram MCP Bridge v2 (session=${SESSION_ID}, label=${SESSION_LABEL})`);
+  log.info(`Starting Telegram MCP Bridge v2 (default_session=${DEFAULT_SESSION_ID}, machine=${MACHINE_LABEL})`);
 
   // Start Telegram polling in background
   startPollingLoop().catch((e) => log.error("Polling loop crashed:", e.message));
