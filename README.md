@@ -8,6 +8,12 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that l
 
 **Zero config needed** — the installer handles everything, including Telegram bot creation.
 
+## What's New in v2.1
+
+- **Session isolation** — Each MCP server instance gets a unique `session_id` and its own Telegram topic + queue file. Multiple agents in the same software (e.g. Windsurf) no longer share messages.
+- **`session_id` in responses** — Every `interact()` response includes `session_id` so agents always know which session they belong to.
+- **Topic-based routing** — Incoming Telegram messages are routed to the correct session's queue based on their forum topic, preventing cross-session leakage.
+
 ## What's New in v2
 
 - **Single `interact` tool** — replaces 4 separate tools (send/poll/check/wait). One call does it all.
@@ -69,7 +75,7 @@ One tool replaces the old send/poll/check/wait pattern:
 
 ```
 interact({ message?, wait?, since_ts? })
-→ { ok, sent?, messages: [{text, ts}], pending, now }
+→ { ok, now, session_id, messages: [{text, ts}] }
 ```
 
 | Parameter | Description |
@@ -81,6 +87,7 @@ interact({ message?, wait?, since_ts? })
 | Response field | Description |
 |----------------|-------------|
 | `now` | Server timestamp — pass as `since_ts` on next call |
+| `session_id` | Your unique session identifier (stable across calls) |
 | `messages` | Array of new messages `[{text, ts}]` |
 | `pending` | Remaining unread messages after this call |
 | `sent` | Whether the message was sent (only if `message` was provided) |
@@ -212,10 +219,27 @@ telegram-mcp-bridge/
 
 ```bash
 npm install            # Install dev dependencies
-npm test               # Run all tests (34 tests)
+npm test               # Run all tests (46 tests)
 npm run build          # Rebuild distributable
 npm run verify         # Verify embedded code matches source
 ```
+
+### Quick Deploy
+
+Run the interactive installer:
+
+```bash
+# Windows
+deploy.bat
+
+# macOS/Linux  
+./deploy.sh
+```
+
+The installer will walk you through:
+- Bot token creation (or existing token)
+- Chat ID detection
+- Agent configuration
 
 ### CI/CD
 

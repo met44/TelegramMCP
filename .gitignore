@@ -3,3 +3,5 @@ node_modules/
 penguin.svg
 *.bak.*
 data/
+deploy.bat
+deploy.sh

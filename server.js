@@ -30,7 +30,7 @@ const POLL_INTERVAL_MS = parseInt(process.env.TELEGRAM_POLL_INTERVAL || "2000", 
 
 // Session identity — each MCP server instance is one session
 const SESSION_ID = process.env.TELEGRAM_SESSION_ID ||
-  `s-${crypto.randomBytes(3).toString("hex")}`;
+  `s-${crypto.randomUUID()?.slice(0, 8) || crypto.randomBytes(4).toString("hex")}`;
 const MACHINE_LABEL = process.env.TELEGRAM_MACHINE_LABEL ||
   os.hostname().slice(0, 20);
 function deriveAgentLabel() {
@@ -379,7 +379,7 @@ class MessageQueue {
 
   pendingCountSince(sinceTs) {
     if (!sinceTs) return this._pending.length;
-    return this._pending.filter((m) => m.ts > sinceTs).length;
+    return this._pending.filter(m => m.ts > sinceTs).length;
   }
 
   clear() {
@@ -493,25 +493,23 @@ const registry = new SessionRegistry(DATA_DIR);
 registry.register(SESSION_ID, MACHINE_LABEL, AGENT_LABEL, null);
 
 // ---------------------------------------------------------------------------
-// Route incoming messages by topic
+// Route incoming messages by topic and session_id
 // ---------------------------------------------------------------------------
 function routeMessageToSession(text, sender, msgTopicId, image = null) {
-  // If message is in a specific topic, route to that session only
+  // Message is in a specific topic — route by topic-to-session mapping
   if (msgTopicId) {
     const topicToSession = buildTopicToSessionMap();
     const targetSessionId = topicToSession[String(msgTopicId)];
 
     if (targetSessionId === SESSION_ID) {
-      // This message is for us
       queue.enqueue(text, sender, image);
       return true;
     }
-    // Not for us — check if it's for another session on this machine
-    // (other sessions will pick it up from their own polling)
+    // Not our topic — another session's poller will handle it
     return false;
   }
 
-  // Message in General topic (no thread_id) — broadcast to all sessions
+  // Message in General topic (no topic id) — broadcast to all active sessions
   broadcastToAllSessions(text, sender, image);
   return true;
 }
@@ -673,11 +671,14 @@ function buildInteractDesc() {
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
     "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
-    "Response format: {ok, now, messages: [{text, ts, image?}]}\n" +
+    "Response format: {ok, now, session_id, messages: [{text, ts, image?}]}\n" +
     "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
+    "- `session_id`: your unique session identifier (included in every response for context)\n" +
     "- `messages`: new messages from user (empty array if none)\n\n" +
     "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
-    "to know if a message is a fresh reply or was pending from before your question.";
+    "to know if a message is a fresh reply or was pending from before your question.\n\n" +
+    "SESSION ISOLATION: Each agent session has a unique session_id and its own Telegram topic.\n" +
+    "Messages are filtered to your session only, even when multiple agents run in the same software.";
 
   const rules = [];
   if (AUTO_SEND_START) rules.push(
@@ -740,12 +741,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (imageArg) {
       const ok = await sendPhotoToTopic(imageArg, message || "");
       if (!ok) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "image send failed", now }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "image send failed", now, session_id: SESSION_ID }) }] };
       }
     } else if (message) {
       const ok = await sendToTopic(message);
       if (!ok) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "send failed", now }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "send failed", now, session_id: SESSION_ID }) }] };
       }
     }
 
@@ -773,7 +774,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return entry;
     });
 
-    const result = { ok: true, now, messages: slim };
+    const result = { ok: true, now, session_id: SESSION_ID, messages: slim };
     const content = [{ type: "text", text: JSON.stringify(result) }];
 
     // Append image content blocks for received photos

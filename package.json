@@ -27,7 +27,8 @@
     "test:config": "node --test test/config.test.js",
     "verify": "node verify.js",
     "configure": "node install.js configure",
-    "install-mcp": "node install.js"
+    "install-mcp": "node install.js",
+    "deploy": "npm install && npm run build && npm run verify && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"

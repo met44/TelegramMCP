@@ -13,13 +13,6 @@ const os = require("os");
 const { execSync } = require("child_process");
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-const INSTALL_DIR = path.join(os.homedir(), ".telegram-mcp-bridge");
-const IS_WIN = process.platform === "win32";
-const IS_MAC = process.platform === "darwin";
-
-// ---------------------------------------------------------------------------
 // Colors (ANSI)
 // ---------------------------------------------------------------------------
 const C = {
@@ -27,6 +20,14 @@ const C = {
   red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m",
   blue: "\x1b[34m", cyan: "\x1b[36m",
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const INSTALL_DIR = path.join(os.homedir(), ".telegram-mcp-bridge");
+const IS_WIN = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
+
 const ok = (s) => console.log(`  ${C.green}✔${C.reset} ${s}`);
 const warn = (s) => console.log(`  ${C.yellow}⚠${C.reset} ${s}`);
 const fail = (s) => console.log(`  ${C.red}✘${C.reset} ${s}`);
@@ -346,13 +347,161 @@ async function runConfigure() {
 }
 
 // ---------------------------------------------------------------------------
+// Validate existing installation — checks agent configs for valid setup
+// ---------------------------------------------------------------------------
+function validateExistingSetup() {
+  const hasServer = fs.existsSync(path.join(INSTALL_DIR, "server.js"));
+  if (!hasServer) return { valid: false, agents: [] };
+
+  const found = [];
+  for (const agent of AGENTS) {
+    const cp = agent.configPath();
+    if (cp.startsWith("__")) continue;
+    if (!fs.existsSync(cp)) continue;
+    try {
+      const config = JSON.parse(fs.readFileSync(cp, "utf-8"));
+      const entry = config[agent.key]?.["telegram-bridge"];
+      if (!entry?.env?.TELEGRAM_BOT_TOKEN || !entry?.env?.TELEGRAM_CHAT_ID) continue;
+      const token = entry.env.TELEGRAM_BOT_TOKEN;
+      const masked = token.length > 10
+        ? token.slice(0, 4) + "****" + token.slice(-4)
+        : "****";
+      found.push({
+        name: agent.name,
+        configPath: cp,
+        maskedToken: masked,
+        chatId: entry.env.TELEGRAM_CHAT_ID,
+      });
+    } catch { /* skip */ }
+  }
+
+  return { valid: found.length > 0, agents: found };
+}
+
+// ---------------------------------------------------------------------------
+// Deploy mode — update server.js + deps only, keep Telegram config
+// ---------------------------------------------------------------------------
+async function runDeploy() {
+  console.log("");
+  console.log(`${C.cyan}${C.bold}╔══════════════════════════════════════════════════╗${C.reset}`);
+  console.log(`${C.cyan}${C.bold}║       📡 Telegram MCP Bridge — Deploy           ║${C.reset}`);
+  console.log(`${C.cyan}${C.bold}╚══════════════════════════════════════════════════╝${C.reset}`);
+  console.log("");
+
+  // Verify existing setup
+  const existing = validateExistingSetup();
+  if (!existing.valid) {
+    fail("No valid existing installation found.");
+    info("Run without 'deploy' to do a full install first.");
+    rl.close();
+    return;
+  }
+
+  for (const match of existing.agents) {
+    ok(`Config: ${match.name} — token ${C.dim}${match.maskedToken}${C.reset}, chat ${C.dim}${match.chatId}${C.reset}`);
+  }
+  console.log("");
+
+  // Step 1: Update server.js
+  step(1, 3, "Updating server.js");
+  const serverCode = getServerCode();
+  if (!serverCode) {
+    fail("Could not find server.js source.");
+    rl.close();
+    return;
+  }
+  fs.mkdirSync(INSTALL_DIR, { recursive: true });
+  fs.writeFileSync(path.join(INSTALL_DIR, "server.js"), serverCode);
+  ok("server.js updated");
+
+  // Step 2: Update dependencies
+  step(2, 3, "Updating dependencies");
+  const pkg = {
+    name: "telegram-mcp-bridge",
+    version: "1.0.0",
+    private: true,
+    dependencies: {
+      "@modelcontextprotocol/sdk": "^1.12.1",
+    },
+  };
+  fs.writeFileSync(path.join(INSTALL_DIR, "package.json"), JSON.stringify(pkg, null, 2));
+  info("Running npm install...");
+  try {
+    execSync("npm install --production", {
+      cwd: INSTALL_DIR,
+      stdio: "pipe",
+      timeout: 120000,
+    });
+    ok("Dependencies updated");
+  } catch (e) {
+    fail("npm install failed: " + (e.stderr?.toString().slice(0, 200) || e.message));
+    rl.close();
+    return;
+  }
+
+  // Step 3: Update agent prompt
+  step(3, 3, "Updating agent prompt");
+  const agentPrompt = fs.existsSync(path.join(__dirname, "AGENT_PROMPT.md"))
+    ? fs.readFileSync(path.join(__dirname, "AGENT_PROMPT.md"), "utf-8")
+    : null;
+  if (agentPrompt) {
+    fs.writeFileSync(path.join(INSTALL_DIR, "AGENT_PROMPT.md"), agentPrompt);
+    ok("Agent prompt updated");
+  } else {
+    info("No AGENT_PROMPT.md found, skipping");
+  }
+
+  // Done
+  console.log("");
+  console.log(`${C.green}${C.bold}╔══════════════════════════════════════════════════╗${C.reset}`);
+  console.log(`${C.green}${C.bold}║             ✅ Deploy complete!                  ║${C.reset}`);
+  console.log(`${C.green}${C.bold}╚══════════════════════════════════════════════════╝${C.reset}`);
+  console.log("");
+  console.log(`  ${C.bold}Server:${C.reset}  ${path.join(INSTALL_DIR, "server.js")}`);
+  console.log(`  ${C.bold}Config:${C.reset}  Preserved (no changes)`);
+  console.log("");
+  info("Restart your agent / IDE to use the updated server.");
+  console.log("");
+
+  rl.close();
+}
+
+// ---------------------------------------------------------------------------
 // Main installer
 // ---------------------------------------------------------------------------
 async function main() {
-  // Route to configure if requested
+  // Route to subcommands
   const args = process.argv.slice(2);
   if (args.includes("configure") || args.includes("--configure") || args.includes("-c")) {
     return runConfigure();
+  }
+  if (args.includes("deploy") || args.includes("--deploy") || args.includes("-d")) {
+    return runDeploy();
+  }
+
+  // Auto-detect existing valid setup and offer deploy-only
+  const existing = validateExistingSetup();
+  if (existing.valid) {
+    console.log("");
+    console.log(`${C.cyan}${C.bold}╔══════════════════════════════════════════════════╗${C.reset}`);
+    console.log(`${C.cyan}${C.bold}║       📡 Telegram MCP Bridge — Installer        ║${C.reset}`);
+    console.log(`${C.cyan}${C.bold}╚══════════════════════════════════════════════════╝${C.reset}`);
+    console.log("");
+    console.log(`  ${C.green}${C.bold}Existing valid installation found!${C.reset}`);
+    console.log("");
+    for (const match of existing.agents) {
+      ok(`${match.name} — token ${C.dim}${match.maskedToken}${C.reset}, chat ${C.dim}${match.chatId}${C.reset}`);
+    }
+    console.log("");
+    console.log(`  ${C.bold}What would you like to do?${C.reset}`);
+    console.log(`    ${C.bold}1)${C.reset} Deploy code update only (keep Telegram config)`);
+    console.log(`    ${C.bold}2)${C.reset} Full install (reconfigure Telegram bot + agent)`);
+    console.log("");
+    const choice = (await ask("Enter choice [1-2]: ")).trim();
+    if (choice === "1") {
+      return runDeploy();
+    }
+    // choice 2 or anything else: fall through to full install
   }
 
   const TOTAL = 6;

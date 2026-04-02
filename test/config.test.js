@@ -219,6 +219,98 @@ describe("config path helpers", () => {
   });
 });
 
+// Extract validateExistingSetup
+const validateMatch = installSrc.match(/(function validateExistingSetup\([\s\S]*?\n\})/);
+if (!validateMatch) throw new Error("Could not extract validateExistingSetup from install.js");
+
+describe("validateExistingSetup", () => {
+  let tmpDir;
+  let origAgents;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "validate-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function createValidator(installDir, agents) {
+    return new Function("fs", "path", "INSTALL_DIR", "AGENTS",
+      `${validateMatch[1]}; return validateExistingSetup;`
+    )(fs, path, installDir, agents);
+  }
+
+  it("returns invalid when server.js does not exist", () => {
+    const validate = createValidator(tmpDir, []);
+    const result = validate();
+    assert.equal(result.valid, false);
+    assert.equal(result.agents.length, 0);
+  });
+
+  it("returns invalid when no agent configs have telegram-bridge", () => {
+    fs.writeFileSync(path.join(tmpDir, "server.js"), "// server");
+    const configPath = path.join(tmpDir, "mcp.json");
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
+    const agents = [{ id: 1, name: "Test", configPath: () => configPath, key: "mcpServers" }];
+    const validate = createValidator(tmpDir, agents);
+    const result = validate();
+    assert.equal(result.valid, false);
+  });
+
+  it("returns valid when agent config has token and chatId", () => {
+    fs.writeFileSync(path.join(tmpDir, "server.js"), "// server");
+    const configPath = path.join(tmpDir, "mcp.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      mcpServers: {
+        "telegram-bridge": {
+          command: "node",
+          args: ["server.js"],
+          env: { TELEGRAM_BOT_TOKEN: "123456:ABCDEF", TELEGRAM_CHAT_ID: "-100123" },
+        },
+      },
+    }));
+    const agents = [{ id: 1, name: "TestAgent", configPath: () => configPath, key: "mcpServers" }];
+    const validate = createValidator(tmpDir, agents);
+    const result = validate();
+    assert.equal(result.valid, true);
+    assert.equal(result.agents.length, 1);
+    assert.equal(result.agents[0].name, "TestAgent");
+    assert.equal(result.agents[0].chatId, "-100123");
+    assert.ok(result.agents[0].maskedToken.includes("****"));
+  });
+
+  it("returns invalid when token is missing", () => {
+    fs.writeFileSync(path.join(tmpDir, "server.js"), "// server");
+    const configPath = path.join(tmpDir, "mcp.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      mcpServers: {
+        "telegram-bridge": {
+          command: "node",
+          args: ["server.js"],
+          env: { TELEGRAM_CHAT_ID: "-100123" },
+        },
+      },
+    }));
+    const agents = [{ id: 1, name: "Test", configPath: () => configPath, key: "mcpServers" }];
+    const validate = createValidator(tmpDir, agents);
+    const result = validate();
+    assert.equal(result.valid, false);
+  });
+
+  it("skips agents with __special__ config paths", () => {
+    fs.writeFileSync(path.join(tmpDir, "server.js"), "// server");
+    const agents = [
+      { id: 1, name: "VSCode", configPath: () => "__vscode__", key: "servers" },
+      { id: 2, name: "Manual", configPath: () => "__manual__", key: "mcpServers" },
+    ];
+    const validate = createValidator(tmpDir, agents);
+    const result = validate();
+    assert.equal(result.valid, false);
+    assert.equal(result.agents.length, 0);
+  });
+});
+
 describe("AGENTS", () => {
   it("has 8 agents defined", () => {
     assert.equal(AGENTS.length, 8);

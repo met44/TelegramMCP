@@ -127,6 +127,12 @@ describe("MessageQueue", () => {
     assert.equal(queue.pendingCount(), 1);
   });
 
+  it("enqueue does not include session_id or thread_id fields", () => {
+    const msg = queue.enqueue("plain", "user");
+    assert.equal(msg.session_id, undefined);
+    assert.equal(msg.thread_id, undefined);
+  });
+
   it("poll returns image data but strips it from delivered", () => {
     const img = { base64: "abc123", mimeType: "image/jpeg" };
     queue.enqueue("photo", "user", img);
@@ -193,6 +199,67 @@ describe("buildInteractDesc", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Test session isolation — each queue file is independent
+// ---------------------------------------------------------------------------
+
+describe("Session isolation via separate queue files", () => {
+  let tmpFile1;
+  let tmpFile2;
+  let queue1;
+  let queue2;
+
+  beforeEach(() => {
+    const base = path.join(os.tmpdir(), `mq-iso-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpFile1 = `${base}-s1.json`;
+    tmpFile2 = `${base}-s2.json`;
+    queue1 = new MessageQueue(tmpFile1);
+    queue2 = new MessageQueue(tmpFile2);
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(tmpFile1); } catch { /* ok */ }
+    try { fs.unlinkSync(tmpFile2); } catch { /* ok */ }
+  });
+
+  it("messages enqueued to one session are not visible in another", () => {
+    queue1.enqueue("for session 1", "user");
+    queue2.enqueue("for session 2", "user");
+
+    const msgs1 = queue1.poll();
+    const msgs2 = queue2.poll();
+
+    assert.equal(msgs1.length, 1);
+    assert.equal(msgs1[0].text, "for session 1");
+    assert.equal(msgs2.length, 1);
+    assert.equal(msgs2[0].text, "for session 2");
+  });
+
+  it("polling one session does not affect the other", () => {
+    queue1.enqueue("msg1", "user");
+    queue2.enqueue("msg2", "user");
+
+    queue1.poll();
+    assert.equal(queue1.pendingCount(), 0);
+    assert.equal(queue2.pendingCount(), 1);
+
+    const msgs2 = queue2.poll();
+    assert.equal(msgs2[0].text, "msg2");
+  });
+
+  it("broadcast simulation delivers to both queues independently", () => {
+    queue1.enqueue("broadcast", "user");
+    queue2.enqueue("broadcast", "user");
+
+    const msgs1 = queue1.poll();
+    const msgs2 = queue2.poll();
+    assert.equal(msgs1.length, 1);
+    assert.equal(msgs2.length, 1);
+    assert.equal(msgs1[0].text, "broadcast");
+    assert.equal(msgs2[0].text, "broadcast");
+  });
+});
+
 // Replicate the builder function for testing (avoids requiring server.js)
 function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
   let d = "Unified Telegram communication tool. Does everything in one call:\n" +
@@ -200,11 +267,14 @@ function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
     "• Always checks for and returns any pending user messages\n" +
     "• If `wait` > 0: blocks up to that many seconds for a user reply before returning\n" +
     "• Use `since_ts` to ignore messages older than a timestamp (avoids reading stale messages)\n\n" +
-    "Response format: {ok, now, messages: [{text, ts, image?}]}\n" +
+    "Response format: {ok, now, session_id, messages: [{text, ts, image?}]}\n" +
     "- `now`: current server timestamp — pass as `since_ts` on next call to only get newer messages\n" +
+    "- `session_id`: your unique session identifier (included in every response for context)\n" +
     "- `messages`: new messages from user (empty array if none)\n\n" +
     "IMPORTANT: Each message has a `ts` (unix timestamp). Compare with your last call's `now` " +
-    "to know if a message is a fresh reply or was pending from before your question.";
+    "to know if a message is a fresh reply or was pending from before your question.\n\n" +
+    "SESSION ISOLATION: Each agent session has a unique session_id and its own Telegram topic.\n" +
+    "Messages are filtered to your session only, even when multiple agents run in the same software.";
 
   const rules = [];
   if (autoStart) rules.push(
