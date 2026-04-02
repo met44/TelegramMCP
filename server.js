@@ -943,6 +943,17 @@ process.on("exit", shutdown);
 async function main() {
   log.info(`Starting Telegram MCP Bridge v2 (default_session=${DEFAULT_SESSION_ID}, machine=${MACHINE_LABEL})`);
 
+  // Register bot commands in Telegram
+  tgApi("setMyCommands", {
+    commands: [
+      { command: "start", description: "Show active sessions" },
+      { command: "pause", description: "Pause agent (hold calls)" },
+      { command: "resume", description: "Resume paused agent" },
+      { command: "continue", description: "Skip agent wait time" },
+    ],
+  }).then(() => log.info("Bot commands registered"))
+    .catch((e) => log.warn("Failed to register bot commands:", e.message));
+
   // Start Telegram polling in background
   startPollingLoop().catch((e) => log.error("Polling loop crashed:", e.message));
 
