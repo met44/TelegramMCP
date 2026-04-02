@@ -159,6 +159,24 @@ describe("MessageQueue", () => {
     const msg = queue.enqueue("plain", "user");
     assert.equal(msg.image, undefined);
   });
+
+  it("enqueue stores tg_msg_id when provided", () => {
+    const msg = queue.enqueue("hello", "user", null, 12345);
+    assert.equal(msg.tg_msg_id, 12345);
+    const msgs = queue.poll();
+    assert.equal(msgs[0].tg_msg_id, 12345);
+  });
+
+  it("enqueue omits tg_msg_id when not provided", () => {
+    const msg = queue.enqueue("hello", "user");
+    assert.equal(msg.tg_msg_id, undefined);
+  });
+
+  it("tg_msg_id persists to disk and reloads", () => {
+    queue.enqueue("msg", "user", null, 99);
+    const queue2 = new MessageQueue(tmpFile);
+    assert.equal(queue2._pending[0].tg_msg_id, 99);
+  });
 });
 
 // ---------------------------------------------------------------------------

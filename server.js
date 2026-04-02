@@ -139,6 +139,33 @@ function tgApiMultipart(method, fields, fileField, filePath, fileName) {
 }
 
 // ---------------------------------------------------------------------------
+// Telegram feedback helpers — reactions + typing indicator
+// ---------------------------------------------------------------------------
+async function setReaction(messageId, emoji) {
+  if (!BOT_TOKEN || !CHAT_ID) return;
+  try {
+    await tgApi("setMessageReaction", {
+      chat_id: parseInt(CHAT_ID, 10),
+      message_id: messageId,
+      reaction: [{ type: "emoji", emoji }],
+    });
+  } catch (e) {
+    log.warn(`setReaction(${emoji}) failed:`, e.message);
+  }
+}
+
+async function sendTypingAction(sessionTopicId) {
+  if (!BOT_TOKEN || !CHAT_ID) return;
+  try {
+    const body = { chat_id: parseInt(CHAT_ID, 10), action: "typing" };
+    if (sessionTopicId) body.message_thread_id = sessionTopicId;
+    await tgApi("sendChatAction", body);
+  } catch (e) {
+    log.warn("sendChatAction(typing) failed:", e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Topic management — persisted map of sessionId → topicId
 // ---------------------------------------------------------------------------
 function getTopicMapFile() { return path.join(DATA_DIR, "_topics.json"); }
@@ -352,7 +379,7 @@ class MessageQueue {
     }
   }
 
-  enqueue(text, sender = "user", image = null) {
+  enqueue(text, sender = "user", image = null, tgMessageId = null) {
     const msg = {
       id: crypto.randomBytes(4).toString("hex"),
       text,
@@ -360,6 +387,7 @@ class MessageQueue {
       ts: Math.floor(Date.now() / 1000),
     };
     if (image) msg.image = image;
+    if (tgMessageId) msg.tg_msg_id = tgMessageId;
     this._pending.push(msg);
     this._save();
     return msg;
@@ -505,34 +533,34 @@ const registry = new SessionRegistry(DATA_DIR);
 // ---------------------------------------------------------------------------
 // Route incoming messages by topic → session
 // ---------------------------------------------------------------------------
-function routeMessageToSession(text, sender, msgTopicId, image = null) {
+function routeMessageToSession(text, sender, msgTopicId, image = null, tgMessageId = null) {
   if (msgTopicId) {
     const topicToSession = buildTopicToSessionMap();
     const targetSessionId = topicToSession[String(msgTopicId)];
     if (targetSessionId) {
       const s = getSession(targetSessionId);
-      s.queue.enqueue(text, sender, image);
+      s.queue.enqueue(text, sender, image, tgMessageId);
       return true;
     }
     return false;
   }
 
   // Message in General topic — broadcast to all known sessions
-  broadcastToAllSessions(text, sender, image);
+  broadcastToAllSessions(text, sender, image, tgMessageId);
   return true;
 }
 
-function broadcastToAllSessions(text, sender, image = null) {
+function broadcastToAllSessions(text, sender, image = null, tgMessageId = null) {
   // Broadcast to all sessions in the in-memory map
   for (const [, s] of sessions) {
-    s.queue.enqueue(text, sender, image);
+    s.queue.enqueue(text, sender, image, tgMessageId);
   }
   // Also broadcast to active registry sessions not yet in memory
   const activeIds = registry.getActiveSessionIds();
   for (const sid of activeIds) {
     if (!sessions.has(sid)) {
       const s = getSession(sid);
-      s.queue.enqueue(text, sender, image);
+      s.queue.enqueue(text, sender, image, tgMessageId);
     }
   }
 }
@@ -622,8 +650,8 @@ async function pollTelegram() {
       const text = msg.text || msg.caption || "";
       if (!text && !image) continue;
 
-      // Route message based on topic
-      routeMessageToSession(text, "user", msgTopicId, image);
+      // Route message based on topic (pass Telegram message_id for reaction tracking)
+      routeMessageToSession(text, "user", msgTopicId, image, msg.message_id);
       log.info(`Message from user in topic ${msgTopicId || "General"}: "${(text || "[photo]").slice(0, 50)}"`);
     }
   } catch (e) {
@@ -754,10 +782,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
-    // Step 2: Wait if requested
+    // React ✅ on previously-read messages when agent sends a reply
+    if (message && session.readMsgIds && session.readMsgIds.length > 0) {
+      for (const mid of session.readMsgIds) {
+        setReaction(mid, "✅");
+      }
+      session.readMsgIds = [];
+    }
+
+    // Step 2: Wait if requested — send typing indicator periodically
     if (wait > 0) {
       const deadline = Date.now() + wait * 1000;
+      let lastTyping = 0;
       while (Date.now() < deadline) {
+        // Send typing indicator every 4 seconds (Telegram typing lasts ~5s)
+        if (Date.now() - lastTyping > 4000) {
+          sendTypingAction(session.topicId);
+          lastTyping = Date.now();
+        }
         const count = sinceTs ? session.queue.pendingCountSince(sinceTs) : session.queue.pendingCount();
         if (count > 0) break;
         await new Promise((r) => setTimeout(r, 500));
@@ -770,6 +812,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       msgs = session.queue.pollSince(sinceTs);
     } else {
       msgs = session.queue.poll();
+    }
+
+    // React 👀 on messages the agent just read — track for later ✅
+    if (!session.readMsgIds) session.readMsgIds = [];
+    for (const m of msgs) {
+      if (m.tg_msg_id) {
+        setReaction(m.tg_msg_id, "👀");
+        session.readMsgIds.push(m.tg_msg_id);
+      }
     }
 
     const slim = msgs.map((m) => {
