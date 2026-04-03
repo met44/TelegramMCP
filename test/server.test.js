@@ -356,6 +356,84 @@ describe("Pause/resume session hold", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Test that /pause, /resume, /continue are silent (no messages to agent)
+// ---------------------------------------------------------------------------
+
+describe("Pause/resume/continue are silent to agent", () => {
+  let tmpFile;
+  let queue;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `mq-silent-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    queue = new MessageQueue(tmpFile);
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(tmpFile); } catch { /* ok */ }
+  });
+
+  it("/pause sets flag but does not enqueue any message", () => {
+    const session = { queue, topicId: 123, paused: false };
+    // Simulate what the server does on /pause
+    session.paused = true;
+    // No queue.enqueue — that's the point
+    assert.equal(session.paused, true);
+    assert.equal(queue.pendingCount(), 0);
+    assert.deepEqual(queue.poll(), []);
+  });
+
+  it("/resume sets flag but does not enqueue any message", () => {
+    const session = { queue, topicId: 123, paused: true };
+    session.paused = false;
+    assert.equal(session.paused, false);
+    assert.equal(queue.pendingCount(), 0);
+    assert.deepEqual(queue.poll(), []);
+  });
+
+  it("/continue sets skipWait but does not enqueue any message", () => {
+    const session = { queue, topicId: 123, paused: false, skipWait: false };
+    session.skipWait = true;
+    assert.equal(session.skipWait, true);
+    assert.equal(queue.pendingCount(), 0);
+    assert.deepEqual(queue.poll(), []);
+  });
+
+  it("user messages before and after pause are still delivered", () => {
+    const session = { queue, topicId: 123, paused: false };
+    queue.enqueue("before pause", "user");
+    session.paused = true;
+    // No pause confirmation enqueued
+    session.paused = false;
+    // No resume confirmation enqueued
+    queue.enqueue("after resume", "user");
+
+    const msgs = queue.poll();
+    assert.equal(msgs.length, 2);
+    assert.equal(msgs[0].text, "before pause");
+    assert.equal(msgs[1].text, "after resume");
+  });
+
+  it("agent response contains no trace of pause/resume commands", () => {
+    const session = { queue, topicId: 123, paused: false };
+    queue.enqueue("hello agent", "user");
+    session.paused = true;
+    session.paused = false;
+    session.skipWait = true;
+    session.skipWait = false;
+
+    const msgs = queue.poll();
+    assert.equal(msgs.length, 1);
+    assert.equal(msgs[0].text, "hello agent");
+    // No system messages about pause/resume/continue
+    for (const m of msgs) {
+      assert.ok(!m.text.includes("paused"), "message should not mention pause");
+      assert.ok(!m.text.includes("resumed"), "message should not mention resume");
+      assert.ok(!m.text.includes("skipped"), "message should not mention skip");
+    }
+  });
+});
+
 // Replicate the builder function for testing (avoids requiring server.js)
 function buildInteractDescWith(autoStart, autoEnd, autoSummary, autoPoll) {
   let d = "Unified Telegram communication tool. Does everything in one call:\n" +

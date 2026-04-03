@@ -610,6 +610,7 @@ async function pollTelegram() {
       const msgTopicId = msg.message_thread_id || null;
 
       // Handle /pause, /resume, /continue in any topic (session-specific or General for all)
+      // Pause/resume is silent — the agent never knows. Server just holds/releases the wait loop.
       if (msg.text === "/pause" || msg.text === "/resume") {
         const isPause = msg.text === "/pause";
         if (msgTopicId) {
@@ -617,7 +618,7 @@ async function pollTelegram() {
           const targetSid = topicToSession[String(msgTopicId)];
           if (targetSid && sessions.has(targetSid)) {
             sessions.get(targetSid).paused = isPause;
-            await sendToSession(isPause ? "⏸ *Session paused* — agent is held until you /resume" : "▶️ *Session resumed* — agent released", msgTopicId);
+            log.info(`Session ${targetSid} ${isPause ? "paused" : "resumed"} by user`);
           }
         } else {
           let count = 0;
@@ -625,7 +626,7 @@ async function pollTelegram() {
             s.paused = isPause;
             count++;
           }
-          await sendToGeneral(isPause ? `⏸ *All sessions paused* (${count}) — agents held until /resume` : `▶️ *All sessions resumed* (${count})`);
+          log.info(`All sessions (${count}) ${isPause ? "paused" : "resumed"} by user`);
         }
         continue;
       }
@@ -636,7 +637,7 @@ async function pollTelegram() {
           const targetSid = topicToSession[String(msgTopicId)];
           if (targetSid && sessions.has(targetSid)) {
             sessions.get(targetSid).skipWait = true;
-            await sendToSession("⏩ *Wait skipped* — agent released immediately", msgTopicId);
+            log.info(`Session ${targetSid} wait skipped by user`);
           }
         } else {
           let count = 0;
@@ -644,7 +645,7 @@ async function pollTelegram() {
             s.skipWait = true;
             count++;
           }
-          await sendToGeneral(`⏩ *All waits skipped* (${count})`);
+          log.info(`All waits skipped (${count}) by user`);
         }
         continue;
       }
